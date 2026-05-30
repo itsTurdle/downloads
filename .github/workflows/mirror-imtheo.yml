@@ -1,0 +1,45 @@
+name: Mirror imtheo client version
+
+# Runs every 15 minutes (and on demand from the Actions tab). Pulls
+# offsets.imtheo.lol/Offsets.hpp, extracts the ClientVersion string, and
+# writes it to client-version.txt — but only commits if the value changed.
+# GitHub Actions runners reach imtheo without Cloudflare bot challenges
+# the way the average user's machine sometimes can't, so this becomes the
+# reliable source of truth that HytheraLoader's GitHub-mirror fallback
+# fetches.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch ClientVersion from imtheo
+        id: fetch
+        run: |
+          BODY=$(curl -sL --fail https://offsets.imtheo.lol/Offsets.hpp)
+          VERSION=$(printf '%s' "$BODY" | grep -oP 'ClientVersion = "\K[^"]+' | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "Could not extract ClientVersion from imtheo response" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Write and commit if changed
+        run: |
+          echo -n "${{ steps.fetch.outputs.version }}" > client-version.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain client-version.txt)" ]; then
+            git add client-version.txt
+            git commit -m "Mirror imtheo ClientVersion → ${{ steps.fetch.outputs.version }}"
+            git push
+          fi
