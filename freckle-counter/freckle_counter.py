@@ -3,14 +3,17 @@
 Freckle counter.
 
 Detects and counts freckles on a face photo using classic computer-vision
-blob detection. Freckles are small, roughly circular spots that are darker
-and redder than the surrounding skin, so the pipeline is:
+blob detection. A freckle is modelled by its *structure*, not just its
+colour: a small spot whose centre is darker and redder than a surrounding
+ring of lighter skin, at some characteristic size. The pipeline is:
 
   1. Build a skin mask (keep skin, drop hair / eyebrows / eyes / lips /
      background / clothing / earbuds).
-  2. Inside the skin, run a black-top-hat to isolate small dark spots that
-     stand out from the local skin tone.
-  3. Threshold, then keep blobs whose size and shape look like freckles.
+  2. Build a "freckle signal" = local darkness gated by redness, so dark
+     hairs/stubble (not red) are suppressed.
+  3. Run a multi-scale Laplacian-of-Gaussian (a centre-surround blob
+     operator) and keep its local maxima -- spots with a genuine lighter
+     ring around them -- verified by an explicit centre-vs-surround test.
 
 Run on one or more images; counts are summed across images. The two photos
 of a face are assumed to show different (non-overlapping) sides, so the
@@ -73,84 +76,108 @@ def build_skin_mask(bgr):
     return mask > 0
 
 
-def detect_freckles(bgr, skin, min_area=3, max_area=120,
-                    min_circularity=0.55, min_contrast=0.06, min_redness=1.6):
-    """Return a list of (x, y, area) freckle detections inside the skin mask.
+def detect_freckles(bgr, skin, sensitivity=2.5, redness_scale=6.0,
+                    min_cs=3.0, scales=(1.6, 2.2, 3.0, 4.0)):
+    """Return ``(detections, response_map)`` where each detection is
+    ``(x, y, radius)``.
 
-    A freckle is a small spot that is BOTH darker and redder than the skin
-    immediately around it. To make the test robust to the strong lighting
-    gradient across a face, we first *flatten the illumination*: estimate the
-    local skin tone with a large blur, then measure each pixel's darkness as a
-    fraction of that local tone. A pixel is freckle-like when
+    Rather than thresholding on colour alone, this models what a freckle *is*:
+    a small spot whose centre is darker/redder than a surrounding ring of
+    lighter skin, at some characteristic size. That is a textbook blob, so we
+    use a scale-normalised **Laplacian-of-Gaussian (LoG)** detector.
 
-        relative darkness >= ``min_contrast``   (e.g. 8.5% darker than skin)
-        AND local redness  >= ``min_redness``    (Lab a* above local skin)
+    Pipeline:
+      1. Build a "freckle signal" S that is high where skin is dark AND red
+         (CLAHE-equalised darkness + redness above the local skin tone). Hairs
+         and stubble are dark but not red, so they score low.
+      2. Run the LoG at several ``scales``. The LoG is a centre-surround
+         operator: it fires only when a dark/red centre is wrapped by a lighter
+         ring of the matching radius -- i.e. it understands the *shape* of a
+         freckle, not just its colour. Taking the max across scales handles
+         freckles of different sizes.
+      3. Keep local maxima of that response (one peak per freckle), then
+         verify each peak really is centre-darker-than-surround by an explicit
+         ring test (``min_cs``). This rejects edges, ridges and plateaus that
+         can still produce a stray LoG response.
 
-    Working in *relative* contrast means a faint freckle on the bright
-    forehead and a freckle in the shaded jaw are judged on the same scale.
-    Lower ``min_contrast`` => more / fainter freckles.
+    Lower ``sensitivity`` lowers the response threshold (more / fainter
+    freckles). Higher ``redness_scale`` demands more redness before a spot
+    counts, rejecting more grey hair/stubble. Higher ``min_cs`` demands a
+    stronger lighter-ring around each spot.
     """
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-    L = lab[:, :, 0].astype(np.float32)
     A = lab[:, :, 1].astype(np.float32)  # a*: green(-) .. red(+)
 
-    # CLAHE equalizes local contrast so freckles read consistently whether the
-    # skin patch is bright or dim, without blowing up global noise.
+    # CLAHE so faint freckles on bright and dim skin read on the same scale.
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     Lc = clahe.apply(lab[:, :, 0]).astype(np.float32)
 
-    # Local skin tone (illumination + base colour) via a large blur. Sigma is
-    # several freckle-widths so individual freckles don't pull their own
-    # background down.
-    bg_L = cv2.GaussianBlur(Lc, (0, 0), sigmaX=9)
-    bg_A = cv2.GaussianBlur(A, (0, 0), sigmaX=9)
-
-    # Relative darkness: how much darker than the surrounding skin (0..1).
-    rel_dark = (bg_L - Lc) / (bg_L + 1e-3)
-    rel_dark = np.clip(rel_dark, 0, None)
-    # Local redness: a* above the surrounding skin.
+    # Redness relative to the broad local skin tone.
+    bg_A = cv2.GaussianBlur(A, (0, 0), sigmaX=12)
     rel_red = np.clip(A - bg_A, 0, None)
 
-    # Light smoothing so single-pixel noise doesn't form blobs.
-    rel_dark = cv2.GaussianBlur(rel_dark, (3, 3), 0)
-    rel_red = cv2.GaussianBlur(rel_red, (3, 3), 0)
+    # Freckle signal: darkness GATED by redness. A freckle is dark AND red, so
+    # we modulate the darkness blob by how red the spot is. This is the key to
+    # not counting stubble/hair: those are dark but not red, so the gate keeps
+    # only ~20% of their darkness and they fall below threshold, while real
+    # red-brown freckles keep their full amplitude. Gating (vs. adding redness)
+    # is what makes darkness alone insufficient to trigger a detection.
+    red_gate = np.clip(rel_red / max(1e-3, redness_scale), 0.0, 1.0)
+    signal = (255.0 - Lc) * (0.2 + 0.8 * red_gate)
+    signal = cv2.GaussianBlur(signal, (0, 0), sigmaX=0.8)  # kill pixel noise
 
-    # Pull detections away from the skin border, where the hair/jaw/eyebrow
-    # transition produces strong dark edges that are not freckles.
     core = cv2.erode(skin.astype(np.uint8),
                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
 
-    response = np.where(core, rel_dark, 0.0).astype(np.float32)
-    binimg = ((rel_dark >= min_contrast) & (rel_red >= min_redness) & core)
-    binimg = binimg.astype(np.uint8) * 255
+    # --- multi-scale LoG blob response -------------------------------------
+    # For a bright blob in `signal`, the Laplacian is negative at the centre,
+    # so -(sigma^2 * Laplacian) peaks (positive) at freckle centres. The
+    # sigma^2 factor makes responses comparable across scales.
+    responses = []
+    radii = []
+    for s in scales:
+        g = cv2.GaussianBlur(signal, (0, 0), sigmaX=s)
+        log = cv2.Laplacian(g, cv2.CV_32F, ksize=1)
+        responses.append(-(s * s) * log)
+        radii.append(s * np.sqrt(2.0))  # blob radius for a LoG at scale s
+    stack = np.stack(responses, axis=0)
+    R = stack.max(axis=0)
+    best_scale = stack.argmax(axis=0)
+    R[~core] = 0.0
 
-    binimg = cv2.morphologyEx(binimg, cv2.MORPH_OPEN,
-                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    # Threshold relative to the in-skin response distribution.
+    vals = R[core & (R > 0)]
+    if vals.size == 0:
+        return [], _to_u8(R)
+    thr = float(np.median(vals)) + sensitivity * float(vals.std())
 
-    n, labels, stats, centroids = cv2.connectedComponentsWithStats(binimg, 8)
+    # Local maxima: a pixel that equals the local max and clears the threshold
+    # is one freckle centre. The dilation radius sets the minimum spacing.
+    local_max = cv2.dilate(R, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    peaks = (R >= local_max - 1e-5) & (R > thr) & core
+
+    # Collapse clusters of equal-valued peak pixels to single centroids.
+    n, _lab, _st, cents = cv2.connectedComponentsWithStats(
+        peaks.astype(np.uint8), 8)
+
+    # Precompute centre/surround means of `signal` for the ring test.
+    centre_mean = cv2.GaussianBlur(signal, (0, 0), sigmaX=1.5)
+    surround_mean = cv2.GaussianBlur(signal, (0, 0), sigmaX=6.0)
+    cs = centre_mean - surround_mean  # >0 where centre stands out from ring
+    cs_thr = min_cs * float(cs[core].std())
+
+    H, W = R.shape
     freckles = []
     for i in range(1, n):
-        area = stats[i, cv2.CC_STAT_AREA]
-        if area < min_area or area > max_area:
+        x, y = cents[i]
+        xi, yi = int(round(x)), int(round(y))
+        if not (0 <= xi < W and 0 <= yi < H):
             continue
-        wbb = stats[i, cv2.CC_STAT_WIDTH]
-        hbb = stats[i, cv2.CC_STAT_HEIGHT]
-        # Reject very elongated blobs (stray hairs / wrinkles / mask edges).
-        if max(wbb, hbb) / max(1, min(wbb, hbb)) > 2.5:
+        # Ring test: centre must genuinely stand out from its lighter surround.
+        if cs[yi, xi] < cs_thr:
             continue
-        comp = (labels == i).astype(np.uint8)
-        cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
-            continue
-        per = cv2.arcLength(cnts[0], True)
-        if per == 0:
-            continue
-        circ = 4 * np.pi * area / (per * per)
-        if circ < min_circularity:
-            continue
-        cx, cy = centroids[i]
-        freckles.append((float(cx), float(cy), int(area)))
-    return freckles, _to_u8(response)
+        freckles.append((float(x), float(y), float(radii[best_scale[yi, xi]])))
+    return freckles, _to_u8(R)
 
 
 def _to_u8(img):
@@ -167,8 +194,9 @@ def annotate(bgr, freckles, skin):
     overlay = out.copy()
     overlay[~skin] = (0, 0, 0)
     out = cv2.addWeighted(out, 0.75, overlay, 0.25, 0)
-    for (x, y, _a) in freckles:
-        cv2.circle(out, (int(round(x)), int(round(y))), 7, (0, 255, 0), 2)
+    for (x, y, r) in freckles:
+        rad = max(4, int(round(r * 2.0)))
+        cv2.circle(out, (int(round(x)), int(round(y))), rad, (0, 255, 0), 2)
     cv2.putText(out, f"count: {len(freckles)}", (20, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 255, 0), 3, cv2.LINE_AA)
     return out
@@ -188,9 +216,8 @@ def count_image(path, args):
     skin = build_skin_mask(bgr)
     freckles, response = detect_freckles(
         bgr, skin,
-        min_area=args.min_area, max_area=args.max_area,
-        min_circularity=args.min_circularity,
-        min_contrast=args.min_contrast, min_redness=args.min_redness)
+        sensitivity=args.sensitivity, redness_scale=args.redness_scale,
+        min_cs=args.min_cs)
 
     if args.debug_dir:
         os.makedirs(args.debug_dir, exist_ok=True)
@@ -206,15 +233,15 @@ def count_image(path, args):
 def main():
     p = argparse.ArgumentParser(description="Count freckles on face photos.")
     p.add_argument("images", nargs="+", help="One or more face image paths.")
-    p.add_argument("--min-area", type=int, default=3)
-    p.add_argument("--max-area", type=int, default=120)
-    p.add_argument("--min-circularity", type=float, default=0.55)
-    p.add_argument("--min-contrast", type=float, default=0.06,
-                   help="Min darkness vs. local skin, as a fraction (0.05-0.12). "
-                        "LOWER = more / fainter freckles.")
-    p.add_argument("--min-redness", type=float, default=1.6,
-                   help="Min Lab a* above local skin (1.2-2.2). Higher rejects "
-                        "stubble/hair (dark but not red). LOWER = more freckles.")
+    p.add_argument("--sensitivity", type=float, default=2.5,
+                   help="LoG response threshold in std-devs above the median "
+                        "(1.5-3.0). LOWER = more / fainter freckles.")
+    p.add_argument("--redness-scale", type=float, default=6.0,
+                   help="Lab a* (redness) needed for a spot to keep full weight. "
+                        "HIGHER rejects more grey hair / stubble.")
+    p.add_argument("--min-cs", type=float, default=0.6,
+                   help="Centre-vs-surround ring strength a blob must clear "
+                        "(in std-devs). Higher = stricter 'real spot' test.")
     p.add_argument("--debug-dir", default=None,
                    help="Write annotated / mask images here.")
     args = p.parse_args()

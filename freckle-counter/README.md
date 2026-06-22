@@ -8,6 +8,11 @@ crossover / double counting).
 
 ## How it works
 
+It detects freckles by their **structure**, not just their color: a freckle is
+a small spot whose center is darker and redder than a *surrounding ring of
+lighter skin*. Plain color thresholding can't tell a freckle from a shadow or a
+smear of redness — modeling the dark-center / light-ring shape can.
+
 1. **Skin mask** — keeps facial skin and drops everything else: hair,
    eyebrows, eyes, lips, background, earbuds, and clothing. Uses a YCrCb skin
    gate plus an HSV hue gate (facial skin is orange, hue ≈ 0–28; a pink shirt
@@ -15,19 +20,21 @@ crossover / double counting).
    region is kept, then its border is eroded inward so the hairline/jaw edge
    doesn't masquerade as freckles.
 
-2. **Illumination flattening + contrast** — CLAHE equalizes local contrast, and
-   a large blur estimates the local skin tone. Each pixel's darkness is then
-   measured *relative* to that local tone, so a faint freckle on the bright
-   forehead and one in the shaded jaw are judged on the same scale.
+2. **Freckle signal** — CLAHE equalizes local contrast, then darkness is
+   **gated by redness**: a spot's darkness only counts to the extent it is also
+   redder than the local skin. Hair and stubble are dark but *not* red, so they
+   are suppressed — darkness alone can't trigger a detection.
 
-3. **Freckle test** — a pixel is freckle-like when it is both **darker** than
-   the surrounding skin (`--min-contrast`) **and redder** in Lab a\*
-   (`--min-redness`). Requiring both rejects plain shadows (dark, not red) and
-   blush (red, not dark).
+3. **Multi-scale Laplacian-of-Gaussian (LoG) blob detector** — the LoG is a
+   center-surround operator: at each size it responds only where a dark/red
+   center is wrapped by a lighter ring of the matching radius. Running it at
+   several scales finds freckles big and small; this is the step that
+   "understands what a freckle is."
 
-4. **Blob filtering** — connected blobs are kept only if their size, aspect
-   ratio, and circularity look like a freckle (rejects pores, stray hairs, and
-   wrinkles).
+4. **Peak + ring verification** — local maxima of the LoG response give one
+   point per freckle. Each is then confirmed by an explicit center-vs-surround
+   test (`--min-cs`) so edges, ridges, and plateaus that sneak a stray response
+   through are discarded.
 
 ## Usage
 
@@ -44,31 +51,32 @@ python3 freckle_counter.py samples/*.jpeg --debug-dir debug
 Example output:
 
 ```
-right_side.jpeg: 229 freckles
-left_side.jpeg: 191 freckles
-TOTAL (no crossover assumed): 420 freckles
+left_side.jpeg: 681 freckles
+right_side.jpeg: 676 freckles
+TOTAL (no crossover assumed): 1357 freckles
 ```
 
 ## Tuning
 
-The counts depend on how faint a spot you're willing to call a freckle. The
-two knobs that matter most:
+The count depends on how faint a spot you're willing to call a freckle, so it's
+adjustable:
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--min-contrast` | `0.06` | Min darkness vs. local skin (fraction). **Lower = more / fainter freckles.** |
-| `--min-redness` | `1.6` | Min Lab a\* above local skin. Higher rejects stubble/hair (dark but not red); lower = more freckles. |
-| `--min-area` / `--max-area` | `3` / `120` | Allowed blob size (px at the 1100px working width). |
-| `--min-circularity` | `0.55` | How round a blob must be. |
+| `--sensitivity` | `2.5` | LoG response threshold, in std-devs above the median. **Lower = more / fainter freckles.** |
+| `--redness-scale` | `6.0` | Redness (Lab a\*) needed to keep a spot at full weight. Higher rejects more grey hair / stubble. |
+| `--min-cs` | `3.0` | Required strength of the lighter ring around a spot. Higher = stricter "real spot" test. |
 
 `--debug-dir` writes three images per input: `*_annotated.png` (green circles
-on detections, non-skin dimmed), `*_skin.png` (the skin mask), and
-`*_response.png` (the relative-darkness map).
+sized to each detected blob, non-skin dimmed), `*_skin.png` (the skin mask),
+and `*_response.png` (the LoG blob-response map). The fastest way to tune is to
+eyeball `*_annotated.png` against the original.
 
 ## Notes / limitations
 
 - It's an estimator, not ground truth — freckle counting is inherently fuzzy
-  and the result moves with `--min-contrast`. Inspect `--debug-dir` and tune to
+  and the result moves with the flags above. Inspect `--debug-dir` and tune to
   taste.
 - Designed for reasonably sharp, well-lit close-ups. Heavy makeup, motion blur,
-  or strong shadows will reduce accuracy.
+  or strong shadows will reduce accuracy. Out-of-focus skin patches are dropped
+  by the skin mask and won't be counted.
