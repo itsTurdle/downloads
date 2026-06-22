@@ -44,9 +44,9 @@ python3 freckle_counter.py samples/*.jpeg --debug-dir debug
 Example output:
 
 ```
-right_side.jpeg: 101 freckles
-left_side.jpeg: 91 freckles
-TOTAL (no crossover assumed): 192 freckles
+right_side.jpeg: 229 freckles
+left_side.jpeg: 191 freckles
+TOTAL (no crossover assumed): 420 freckles
 ```
 
 ## Tuning
@@ -56,8 +56,8 @@ two knobs that matter most:
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--min-contrast` | `0.085` | Min darkness vs. local skin (fraction). **Lower = more / fainter freckles.** |
-| `--min-redness` | `2.0` | Min Lab a\* above local skin. Lower = more freckles. |
+| `--min-contrast` | `0.06` | Min darkness vs. local skin (fraction). **Lower = more / fainter freckles.** |
+| `--min-redness` | `1.6` | Min Lab a\* above local skin. Higher rejects stubble/hair (dark but not red); lower = more freckles. |
 | `--min-area` / `--max-area` | `3` / `120` | Allowed blob size (px at the 1100px working width). |
 | `--min-circularity` | `0.55` | How round a blob must be. |
 

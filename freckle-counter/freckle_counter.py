@@ -74,7 +74,7 @@ def build_skin_mask(bgr):
 
 
 def detect_freckles(bgr, skin, min_area=3, max_area=120,
-                    min_circularity=0.55, min_contrast=0.085, min_redness=2.0):
+                    min_circularity=0.55, min_contrast=0.06, min_redness=1.6):
     """Return a list of (x, y, area) freckle detections inside the skin mask.
 
     A freckle is a small spot that is BOTH darker and redder than the skin
@@ -209,11 +209,12 @@ def main():
     p.add_argument("--min-area", type=int, default=3)
     p.add_argument("--max-area", type=int, default=120)
     p.add_argument("--min-circularity", type=float, default=0.55)
-    p.add_argument("--min-contrast", type=float, default=0.085,
-                   help="Min darkness vs. local skin, as a fraction (0.05-0.15). "
+    p.add_argument("--min-contrast", type=float, default=0.06,
+                   help="Min darkness vs. local skin, as a fraction (0.05-0.12). "
                         "LOWER = more / fainter freckles.")
-    p.add_argument("--min-redness", type=float, default=2.0,
-                   help="Min Lab a* above local skin. LOWER = more freckles.")
+    p.add_argument("--min-redness", type=float, default=1.6,
+                   help="Min Lab a* above local skin (1.2-2.2). Higher rejects "
+                        "stubble/hair (dark but not red). LOWER = more freckles.")
     p.add_argument("--debug-dir", default=None,
                    help="Write annotated / mask images here.")
     args = p.parse_args()
