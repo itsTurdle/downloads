@@ -1,0 +1,984 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iPhone LiDAR</title>
+<link rel="icon" href="data:,"><!-- suppress the favicon request rather than 404 it -->
+<style>
+  :root{
+    --bg:#07080b; --panel:rgba(16,18,24,.82); --line:rgba(255,255,255,.10);
+    --ink:#e8ecf4; --dim:#8b95a8; --accent:#4cc2ff; --good:#5ddc9a; --warn:#ffb454; --bad:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);
+    font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  /* canvas is a replaced element: inset:0 alone leaves width:auto at the intrinsic
+     300x150, so the size has to be stated explicitly. */
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:grab}
+  #gl.dragging{cursor:grabbing}
+
+  .panel{position:fixed;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;backdrop-filter:blur(12px);padding:12px 14px}
+  #hud{top:12px;left:12px;min-width:232px}
+  #ctl{top:12px;right:12px;width:266px;max-height:calc(100vh - 24px);overflow-y:auto}
+  #help{bottom:12px;left:12px;color:var(--dim);font-size:11.5px;line-height:1.7}
+
+  h1{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+    margin:0 0 10px;font-weight:600}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
+  .row span:last-child{color:var(--ink);font-variant-numeric:tabular-nums}
+  .row span:first-child{color:var(--dim)}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;
+    vertical-align:1px;background:var(--bad)}
+  .dot.on{background:var(--good);box-shadow:0 0 8px var(--good)}
+  .dot.warn{background:var(--warn)}
+
+  fieldset{border:0;border-top:1px solid var(--line);margin:14px 0 0;padding:12px 0 0}
+  legend{display:none}
+  .sect{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+    margin:14px 0 8px;padding-top:12px;border-top:1px solid var(--line)}
+  .sect:first-of-type{margin-top:0;padding-top:0;border-top:0}
+
+  label.sl{display:block;margin:9px 0}
+  label.sl .lab{display:flex;justify-content:space-between;color:var(--dim);margin-bottom:4px}
+  label.sl .lab b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;height:3px;-webkit-appearance:none;appearance:none;
+    background:rgba(255,255,255,.14);border-radius:2px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
+    border-radius:50%;background:var(--accent);cursor:pointer;border:0}
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;
+    background:var(--accent);cursor:pointer;border:0}
+
+  .seg{display:flex;gap:4px;flex-wrap:wrap}
+  .seg button{flex:1 1 auto;min-width:52px;padding:6px 4px;font:inherit;font-size:11.5px;
+    color:var(--dim);background:rgba(255,255,255,.05);border:1px solid var(--line);
+    border-radius:6px;cursor:pointer}
+  .seg button:hover{color:var(--ink);background:rgba(255,255,255,.09)}
+  .seg button[aria-pressed=true]{color:#04121a;background:var(--accent);border-color:var(--accent);font-weight:600}
+
+  .btn{display:block;width:100%;margin:6px 0 0;padding:8px;font:inherit;font-size:12px;
+    color:var(--ink);background:rgba(255,255,255,.06);border:1px solid var(--line);
+    border-radius:6px;cursor:pointer;text-align:center}
+  .btn:hover{background:rgba(255,255,255,.11)}
+  .btn.pri[aria-pressed=true]{color:#04121a;background:var(--good);border-color:var(--good);font-weight:600}
+  .btn:disabled{opacity:.4;cursor:default}
+
+  kbd{background:rgba(255,255,255,.09);border:1px solid var(--line);border-radius:3px;
+    padding:1px 5px;font:inherit;font-size:10.5px;color:var(--ink)}
+
+  #splash{position:fixed;inset:0;display:grid;place-items:center;background:rgba(7,8,11,.94);
+    text-align:center;z-index:20;transition:opacity .4s;padding:24px}
+  #splash.hide{opacity:0;pointer-events:none}
+  #splash h2{font-size:15px;letter-spacing:.05em;margin:0 0 12px;font-weight:600}
+  #splash p{color:var(--dim);margin:5px 0;font-size:12.5px}
+  #splash code{color:var(--accent)}
+  .pulse{width:38px;height:38px;margin:0 auto 20px;border:2px solid var(--line);
+    border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="hud" class="panel">
+  <h1>Sensor</h1>
+  <div class="row"><span><i id="dot" class="dot"></i>link</span><span id="s-link">waiting</span></div>
+  <div class="row"><span>device</span><span id="s-dev">—</span></div>
+  <div class="row"><span>source</span><span id="s-src">—</span></div>
+  <div class="row"><span>tracking</span><span id="s-track">—</span></div>
+  <div class="row"><span>depth</span><span id="s-dims">—</span></div>
+  <div class="row"><span>inference</span><span id="s-infer">—</span></div>
+  <div class="row"><span>stream</span><span id="s-fps">—</span></div>
+  <div class="row"><span>bandwidth</span><span id="s-bw">—</span></div>
+  <div class="row"><span>live points</span><span id="s-pts">—</span></div>
+  <div class="row"><span>scan points</span><span id="s-acc">0</span></div>
+  <div class="row"><span>render</span><span id="s-draw">—</span></div>
+</div>
+
+<div id="ctl" class="panel">
+  <div class="sect">Colour</div>
+  <div class="seg" id="mode">
+    <button data-m="0" aria-pressed="true">camera</button>
+    <button data-m="1">depth</button>
+    <button data-m="2">confid</button>
+    <button data-m="3">normal</button>
+  </div>
+
+  <div class="sect">Filters</div>
+  <label class="sl"><span class="lab">near clip <b id="v-near">0.10</b> m</span>
+    <input type="range" id="near" min="0.05" max="3" step="0.05" value="0.1"></label>
+  <label class="sl"><span class="lab">far clip <b id="v-far">6.0</b> m</span>
+    <input type="range" id="far" min="0.5" max="10" step="0.1" value="6"></label>
+  <label class="sl" id="scale-row" hidden><span class="lab">depth scale <b id="v-scale">1.00</b>×</span>
+    <input type="range" id="dscale" min="0.3" max="3" step="0.01" value="1"></label>
+  <div class="seg" id="conf" style="margin-top:10px">
+    <button data-c="0">all</button>
+    <button data-c="1" aria-pressed="true">med+</button>
+    <button data-c="2">high</button>
+  </div>
+
+  <div class="sect">Points</div>
+  <label class="sl"><span class="lab">size <b id="v-size">1.0</b>×</span>
+    <input type="range" id="size" min="0.2" max="4" step="0.1" value="1"></label>
+  <label class="sl"><span class="lab">brightness <b id="v-gain">1.0</b>×</span>
+    <input type="range" id="gain" min="0.3" max="2.5" step="0.05" value="1"></label>
+
+  <div class="sect">Scan</div>
+  <button class="btn pri" id="acc" aria-pressed="false">Build scan &nbsp;<kbd>B</kbd></button>
+  <button class="btn" id="clear">Clear scan</button>
+  <button class="btn" id="ply" disabled>Export .ply</button>
+
+  <div class="sect">View</div>
+  <div class="seg" id="viewmode">
+    <button data-v="orbit" aria-pressed="true">orbit</button>
+    <button data-v="follow">follow</button>
+    <button data-v="fpv">phone</button>
+  </div>
+  <button class="btn" id="reset">Reset camera &nbsp;<kbd>R</kbd></button>
+  <div class="seg" id="toggles" style="margin-top:6px">
+    <button data-t="grid" aria-pressed="true">grid</button>
+    <button data-t="frustum" aria-pressed="true">frustum</button>
+    <button data-t="trail" aria-pressed="true">path</button>
+  </div>
+</div>
+
+<div id="help" class="panel">
+  <kbd>drag</kbd> orbit &nbsp; <kbd>shift+drag</kbd> pan &nbsp; <kbd>wheel</kbd> zoom<br>
+  <kbd>R</kbd> reset &nbsp; <kbd>B</kbd> build scan &nbsp; <kbd>F</kbd> follow &nbsp; <kbd>1-4</kbd> colour
+</div>
+
+<div id="splash">
+  <div>
+    <div class="pulse"></div>
+    <h2>Waiting for the phone</h2>
+    <p>Open <code>LidarStream</code> on the iPhone and point it at this machine.</p>
+    <p id="splash-ws" style="margin-top:14px"></p>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Rendering a LiDAR frame is one draw call: the vertex shader unprojects the
+// depth texture, so the CPU only ever uploads three textures per frame and
+// never touches per-point data. The accumulated scan is the one exception --
+// it has to live in a real world-space buffer, so that path runs on the CPU.
+// ---------------------------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("gl");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false,
+                                         powerPreference: "high-performance" });
+if (!gl) {
+  document.body.innerHTML = "<p style='padding:2rem'>WebGL2 is required and unavailable.</p>";
+  throw new Error("no webgl2");
+}
+
+// ------------------------------- mat4 --------------------------------------
+const M4 = {
+  ident: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  mul(a, b, out = new Float32Array(16)) {          // out = a * b, column-major
+    for (let c = 0; c < 4; c++) {
+      for (let r = 0; r < 4; r++) {
+        out[c*4+r] = a[r]*b[c*4] + a[4+r]*b[c*4+1] + a[8+r]*b[c*4+2] + a[12+r]*b[c*4+3];
+      }
+    }
+    return out;
+  },
+  perspective(fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+    return new Float32Array([
+      f/aspect,0,0,0,  0,f,0,0,  0,0,(far+near)*nf,-1,  0,0,2*far*near*nf,0]);
+  },
+  lookAt(eye, ctr, up) {
+    let z = [eye[0]-ctr[0], eye[1]-ctr[1], eye[2]-ctr[2]];
+    let l = Math.hypot(...z) || 1; z = z.map(v => v/l);
+    let x = [up[1]*z[2]-up[2]*z[1], up[2]*z[0]-up[0]*z[2], up[0]*z[1]-up[1]*z[0]];
+    l = Math.hypot(...x) || 1; x = x.map(v => v/l);
+    const y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
+    return new Float32Array([
+      x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0,
+      -(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]),
+      -(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]),
+      -(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]), 1]);
+  },
+  // Inverse of a rigid transform (rotation + translation), which is all the
+  // phone ever sends us.
+  invRigid(m) {
+    const o = new Float32Array(16);
+    o[0]=m[0]; o[1]=m[4]; o[2]=m[8];
+    o[4]=m[1]; o[5]=m[5]; o[6]=m[9];
+    o[8]=m[2]; o[9]=m[6]; o[10]=m[10];
+    const t = [m[12], m[13], m[14]];
+    o[12] = -(m[0]*t[0]+m[1]*t[1]+m[2]*t[2]);
+    o[13] = -(m[4]*t[0]+m[5]*t[1]+m[6]*t[2]);
+    o[14] = -(m[8]*t[0]+m[9]*t[1]+m[10]*t[2]);
+    o[15] = 1;
+    return o;
+  },
+  xform(m, p) {
+    return [m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],
+            m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],
+            m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]];
+  },
+};
+
+// ------------------------------- shaders -----------------------------------
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error("shader: " + gl.getShaderInfoLog(s) + "\n" +
+      src.split("\n").map((l,i)=>`${i+1}: ${l}`).join("\n"));
+  }
+  return s;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error("link: " + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+function uniforms(p) {
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const name = gl.getActiveUniform(p, i).name.replace(/\[0\]$/, "");
+    u[name] = gl.getUniformLocation(p, name);
+  }
+  return u;
+}
+
+const TURBO = `
+vec3 turbo(float x){
+  x = clamp(x, 0.0, 1.0);
+  vec4 k1 = vec4(1.0, x, x*x, x*x*x);
+  vec2 k2 = vec2(k1.w*x, k1.w*x*x);
+  return clamp(vec3(
+    dot(k1, vec4( 0.13572138,  4.61539260, -42.66032258, 132.13108234)) + dot(k2, vec2(-152.94239396,  59.28637943)),
+    dot(k1, vec4( 0.09140261,  2.19418839,   4.84296658, -14.18503333)) + dot(k2, vec2(   4.27729857,   2.82956604)),
+    dot(k1, vec4( 0.10667330, 12.64194608, -60.58204836, 110.36276771)) + dot(k2, vec2( -89.90310912,  27.34824973))
+  ), 0.0, 1.0);
+}`;
+
+// Live cloud: one point per depth sample, unprojected on the GPU.
+const CLOUD_VS = `#version 300 es
+precision highp float;
+in vec2 aPix;
+uniform sampler2D uDepth, uConf, uColor;
+uniform vec4 uIntr;        // fx fy cx cy, in depth pixels
+uniform vec2 uDims;
+uniform mat4 uCamToWorld;  // from the phone
+uniform mat4 uViewProj, uView;
+uniform float uNear, uFar, uMinConf, uSizeScale, uFocalPx, uMode, uGain, uDepthScale;
+out vec3 vColor;
+${TURBO}
+
+// Pixels either side of the sample used for the normal estimate. Wider = smoother
+// but blunter at edges; 2 is the useful compromise at 256x192.
+const float NORMAL_STEP = 2.0;
+
+// Inferred depth carries an ambiguous absolute scale, so everything that reads the
+// depth texture goes through here and gets the same calibration factor.
+float sampleDepth(vec2 p){
+  return texture(uDepth, (p + 0.5) / uDims).r * uDepthScale;
+}
+
+// Camera-space position of a depth pixel. Returns z == 0.0 for "no reading" so
+// callers can reject it -- a real point always has negative z.
+vec3 unproject(vec2 p){
+  float dd = sampleDepth(p);
+  if (dd <= 0.0) return vec3(0.0);
+  return vec3( (p.x + 0.5 - uIntr.z) / uIntr.x * dd,
+              -(p.y + 0.5 - uIntr.w) / uIntr.y * dd,
+              -dd );
+}
+
+void main(){
+  vec2 uv = (aPix + 0.5) / uDims;
+  float d = sampleDepth(aPix);
+  float c = texture(uConf, uv).r * 255.0;
+
+  if (d < uNear || d > uFar || c < uMinConf) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // outside clip space: culled
+    gl_PointSize = 0.0;
+    vColor = vec3(0.0);
+    return;
+  }
+
+  // ARKit depth is planar along -z, so the camera-space point is just the
+  // normalised ray times d. Image v grows downward; camera y grows up.
+  vec4 world = uCamToWorld * vec4(unproject(aPix), 1.0);
+  gl_Position = uViewProj * world;
+
+  // Size each point to cover exactly one depth sample's footprint, so the
+  // cloud stays gapless as you move closer without turning into blobs.
+  float spacing = d / uIntr.x;
+  float eyeDist = max(-(uView * world).z, 0.01);
+  gl_PointSize = clamp(spacing * uFocalPx / eyeDist * uSizeScale, 1.0, 32.0);
+
+  if (uMode < 0.5) {
+    vColor = texture(uColor, uv).rgb * uGain;
+  } else if (uMode < 1.5) {
+    vColor = turbo((d - uNear) / max(uFar - uNear, 0.01)) * uGain;
+  } else if (uMode < 2.5) {
+    vColor = (c >= 1.5 ? vec3(0.36,0.86,0.60)
+           : (c >= 0.5 ? vec3(1.00,0.71,0.33) : vec3(1.00,0.42,0.42))) * uGain;
+  } else {
+    // Geometric normal from the cross product of two reconstructed tangents.
+    // Differencing raw depth over one pixel amplifies sensor noise into confetti;
+    // a wider baseline over real 3D neighbours stays readable.
+    vec3 pr = unproject(aPix + vec2(NORMAL_STEP, 0.0));
+    vec3 pl = unproject(aPix - vec2(NORMAL_STEP, 0.0));
+    vec3 pu = unproject(aPix + vec2(0.0, NORMAL_STEP));
+    vec3 pd = unproject(aPix - vec2(0.0, NORMAL_STEP));
+    // Order chosen so a surface facing the camera gets a +z normal.
+    vec3 n = cross(pr - pl, pd - pu);
+    float len = length(n);
+    if (len < 1e-8 || pr.z == 0.0 || pl.z == 0.0 || pu.z == 0.0 || pd.z == 0.0) {
+      // A neighbour had no return, so there is no surface to take a normal from.
+      vColor = vec3(0.18, 0.19, 0.22) * uGain;
+    } else {
+      vColor = (n / len * 0.5 + 0.5) * uGain;
+    }
+  }
+}`;
+
+// Round sprite with a soft edge, shared by the live cloud and the scan.
+const CLOUD_FS = `#version 300 es
+precision highp float;
+in vec3 vColor;
+out vec4 frag;
+void main(){
+  vec2 q = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(q, q);
+  if (r2 > 1.0) discard;
+  frag = vec4(vColor, 1.0 - smoothstep(0.55, 1.0, r2));
+}`;
+
+// Accumulated scan: real world-space vertices with baked colour.
+const SCAN_VS = `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aCol;
+uniform mat4 uViewProj, uView;
+uniform float uSizeScale, uFocalPx, uGain;
+out vec3 vColor;
+void main(){
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+  float eyeDist = max(-(uView * vec4(aPos,1.0)).z, 0.01);
+  gl_PointSize = clamp(0.006 * uFocalPx / eyeDist * uSizeScale, 1.0, 24.0);
+  vColor = aCol * uGain;
+}`;
+
+const LINE_VS = `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aCol;
+uniform mat4 uViewProj;
+out vec3 vColor;
+void main(){ gl_Position = uViewProj * vec4(aPos,1.0); vColor = aCol; }`;
+
+const LINE_FS = `#version 300 es
+precision highp float;
+in vec3 vColor;
+out vec4 frag;
+void main(){ frag = vec4(vColor, 1.0); }`;
+
+const progCloud = program(CLOUD_VS, CLOUD_FS);
+const progScan  = program(SCAN_VS,  CLOUD_FS);
+const progLine  = program(LINE_VS,  LINE_FS);
+const uCloud = uniforms(progCloud), uScan = uniforms(progScan), uLine = uniforms(progLine);
+
+// ------------------------------- state -------------------------------------
+const st = {
+  dw: 0, dh: 0,
+  intr: [1, 1, 0, 0],
+  camToWorld: M4.ident(),
+  depth: null,               // Float32Array metres
+  conf: null,                // Uint8Array
+  havePixels: false,
+  mode: 0, near: 0.1, far: 6, minConf: 1, sizeScale: 1, gain: 1, depthScale: 1,
+  grid: true, frustum: true, trail: true,
+  viewMode: "orbit",
+  building: false,
+  liveCount: 0,
+  drawMs: 0,
+};
+
+// Orbit camera
+const cam = { yaw: 0.6, pitch: 0.32, dist: 4.6, target: [0, -0.6, -2.6] };
+const DEF_CAM = JSON.parse(JSON.stringify(cam));
+
+// ------------------------------- textures ----------------------------------
+function mkTex(unit) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const texDepth = mkTex(0), texConf = mkTex(1), texColor = mkTex(2);
+// Neutral grey until the first JPEG lands, so camera mode is never black.
+gl.activeTexture(gl.TEXTURE2);
+gl.bindTexture(gl.TEXTURE_2D, texColor);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE,
+              new Uint8Array([128, 132, 140]));
+
+// ------------------------------- geometry ----------------------------------
+let vaoCloud = null, cloudCount = 0;
+function buildCloudGeometry(w, h) {
+  if (vaoCloud) gl.deleteVertexArray(vaoCloud);
+  const pix = new Float32Array(w * h * 2);
+  for (let y = 0, i = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) { pix[i++] = x; pix[i++] = y; }
+  }
+  vaoCloud = gl.createVertexArray();
+  gl.bindVertexArray(vaoCloud);
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, pix, gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(progCloud, "aPix");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  cloudCount = w * h;
+}
+
+// Accumulated scan buffers. Preallocated so appending never reallocates.
+const SCAN_CAP = 3_000_000;
+const scan = {
+  pos: new Float32Array(SCAN_CAP * 3),
+  col: new Uint8Array(SCAN_CAP * 3),
+  n: 0,
+  dirty: false,
+  vao: null, bPos: null, bCol: null,
+  lastAdd: 0,
+  lastPose: null,
+};
+{
+  scan.vao = gl.createVertexArray();
+  gl.bindVertexArray(scan.vao);
+  scan.bPos = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, scan.bPos);
+  gl.bufferData(gl.ARRAY_BUFFER, SCAN_CAP * 12, gl.DYNAMIC_DRAW);
+  let l = gl.getAttribLocation(progScan, "aPos");
+  gl.enableVertexAttribArray(l);
+  gl.vertexAttribPointer(l, 3, gl.FLOAT, false, 0, 0);
+  scan.bCol = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, scan.bCol);
+  gl.bufferData(gl.ARRAY_BUFFER, SCAN_CAP * 3, gl.DYNAMIC_DRAW);
+  l = gl.getAttribLocation(progScan, "aCol");
+  gl.enableVertexAttribArray(l);
+  gl.vertexAttribPointer(l, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+  gl.bindVertexArray(null);
+}
+
+// Line geometry (grid, axes, frustum, camera path) shares one dynamic buffer.
+const lines = { vao: null, buf: null, data: new Float32Array(6 * 20000), n: 0 };
+{
+  lines.vao = gl.createVertexArray();
+  gl.bindVertexArray(lines.vao);
+  lines.buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, lines.buf);
+  gl.bufferData(gl.ARRAY_BUFFER, lines.data.byteLength, gl.DYNAMIC_DRAW);
+  let l = gl.getAttribLocation(progLine, "aPos");
+  gl.enableVertexAttribArray(l);
+  gl.vertexAttribPointer(l, 3, gl.FLOAT, false, 24, 0);
+  l = gl.getAttribLocation(progLine, "aCol");
+  gl.enableVertexAttribArray(l);
+  gl.vertexAttribPointer(l, 3, gl.FLOAT, false, 24, 12);
+  gl.bindVertexArray(null);
+}
+function lineReset() { lines.n = 0; }
+function seg(a, b, c) {
+  if ((lines.n + 2) * 6 > lines.data.length) return;
+  const d = lines.data; let i = lines.n * 6;
+  d[i++]=a[0]; d[i++]=a[1]; d[i++]=a[2]; d[i++]=c[0]; d[i++]=c[1]; d[i++]=c[2];
+  d[i++]=b[0]; d[i++]=b[1]; d[i++]=b[2]; d[i++]=c[0]; d[i++]=c[1]; d[i++]=c[2];
+  lines.n += 2;
+}
+const path = [];   // phone camera positions, for the path overlay
+
+function buildLines() {
+  lineReset();
+  if (st.grid) {
+    const N = 10, S = 0.5, y = -1.5, g = [0.18, 0.20, 0.24], gm = [0.28, 0.31, 0.36];
+    for (let i = -N; i <= N; i++) {
+      const c = i === 0 ? gm : g;
+      seg([i*S, y, -N*S], [i*S, y, N*S], c);
+      seg([-N*S, y, i*S], [N*S, y, i*S], c);
+    }
+    seg([0,y,0], [0.6,y,0], [0.85,0.28,0.30]);
+    seg([0,y,0], [0,y+0.6,0], [0.35,0.82,0.42]);
+    seg([0,y,0], [0,y,0.6], [0.30,0.52,0.92]);
+  }
+  if (st.frustum && st.havePixels) {
+    const m = st.camToWorld, [fx, fy, cx, cy] = st.intr;
+    const D = 0.42;
+    const corner = (px, py) => M4.xform(m,
+      [(px - cx) / fx * D, -(py - cy) / fy * D, -D]);
+    const c = [ corner(0,0), corner(st.dw,0), corner(st.dw,st.dh), corner(0,st.dh) ];
+    const o = M4.xform(m, [0,0,0]);
+    const col = [0.30, 0.76, 1.0];
+    for (let i = 0; i < 4; i++) {
+      seg(o, c[i], col);
+      seg(c[i], c[(i+1) % 4], col);
+    }
+    // Short stub along +up so the phone's roll is readable.
+    seg(o, M4.xform(m, [0, 0.12, 0]), [0.35,0.82,0.42]);
+  }
+  if (st.trail && path.length > 1) {
+    for (let i = 1; i < path.length; i++) {
+      const t = i / path.length;
+      seg(path[i-1], path[i], [0.25 + 0.35*t, 0.55 + 0.25*t, 0.75]);
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, lines.buf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, lines.data.subarray(0, lines.n * 6));
+}
+
+// ------------------------------- scan append -------------------------------
+// Runs on the CPU because the result must persist in world space. Throttled by
+// time AND by pose delta, so standing still does not pile up duplicate points.
+function maybeAppendScan() {
+  if (!st.building || !st.havePixels) return;
+  const now = performance.now();
+  if (now - scan.lastAdd < 110) return;
+
+  const m = st.camToWorld;
+  const pos = [m[12], m[13], m[14]];
+  if (scan.lastPose) {
+    const p = scan.lastPose;
+    const moved = Math.hypot(pos[0]-p[0], pos[1]-p[1], pos[2]-p[2]);
+    const rot = Math.abs(m[8]-p[3]) + Math.abs(m[9]-p[4]) + Math.abs(m[10]-p[5]);
+    if (moved < 0.02 && rot < 0.02) return;
+  }
+  scan.lastAdd = now;
+  scan.lastPose = [pos[0], pos[1], pos[2], m[8], m[9], m[10]];
+
+  const { dw, dh, depth, conf, intr } = st;
+  const [fx, fy, cx, cy] = intr;
+  const rgb = colorPixels;                       // may be null before first JPEG
+  let n = scan.n;
+  // Subsample: a full 49k-point dump every 110 ms fills the buffer in under a
+  // minute and adds little detail beyond what neighbouring frames already gave.
+  const step = 2;
+  for (let y = 0; y < dh; y += step) {
+    for (let x = 0; x < dw; x += step) {
+      if (n >= SCAN_CAP) { st.building = false; syncAccButton(); break; }
+      const i = y * dw + x;
+      const d = depth[i] * st.depthScale;
+      if (d < st.near || d > st.far) continue;
+      if (conf && conf[i] < st.minConf) continue;
+      const camX = (x + 0.5 - cx) / fx * d;
+      const camY = -(y + 0.5 - cy) / fy * d;
+      const camZ = -d;
+      const o = n * 3;
+      scan.pos[o]   = m[0]*camX + m[4]*camY + m[8]*camZ  + m[12];
+      scan.pos[o+1] = m[1]*camX + m[5]*camY + m[9]*camZ  + m[13];
+      scan.pos[o+2] = m[2]*camX + m[6]*camY + m[10]*camZ + m[14];
+      if (rgb) {
+        const j = i * 4;
+        scan.col[o] = rgb[j]; scan.col[o+1] = rgb[j+1]; scan.col[o+2] = rgb[j+2];
+      } else {
+        scan.col[o] = scan.col[o+1] = scan.col[o+2] = 170;
+      }
+      n++;
+    }
+  }
+  if (n !== scan.n) {
+    // Upload only the new tail.
+    gl.bindBuffer(gl.ARRAY_BUFFER, scan.bPos);
+    gl.bufferSubData(gl.ARRAY_BUFFER, scan.n * 12, scan.pos.subarray(scan.n*3, n*3));
+    gl.bindBuffer(gl.ARRAY_BUFFER, scan.bCol);
+    gl.bufferSubData(gl.ARRAY_BUFFER, scan.n * 3, scan.col.subarray(scan.n*3, n*3));
+    scan.n = n;
+    $("s-acc").textContent = n.toLocaleString();
+    $("ply").disabled = n === 0;
+  }
+}
+
+// ------------------------------- frame ingest ------------------------------
+let colorPixels = null;        // RGBA bytes of the latest JPEG, at depth resolution
+let decoding = false;
+const decodeCanvas = document.createElement("canvas");
+const decodeCtx = decodeCanvas.getContext("2d", { willReadFrequently: true });
+
+function onFrame(buf) {
+  const dv = new DataView(buf);
+  const hlen = dv.getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
+  let off = 4 + hlen;
+
+  const { dw, dh, dlen, clen, rlen } = header;
+  if (dw !== st.dw || dh !== st.dh) {
+    st.dw = dw; st.dh = dh;
+    st.depth = new Float32Array(dw * dh);
+    st.conf = new Uint8Array(dw * dh);
+    buildCloudGeometry(dw, dh);
+    decodeCanvas.width = dw; decodeCanvas.height = dh;
+    $("s-dims").textContent = `${dw}×${dh}`;
+  }
+
+  // uint16 millimetres -> float metres
+  const mm = new Uint16Array(buf, off, dlen / 2); off += dlen;
+  const dep = st.depth;
+  for (let i = 0; i < mm.length; i++) dep[i] = mm[i] * 0.001;
+
+  if (clen) {
+    st.conf.set(new Uint8Array(buf, off, clen));
+    off += clen;
+  } else {
+    st.conf.fill(2);
+  }
+
+  st.intr = [header.fx, header.fy, header.cx, header.cy];
+  st.camToWorld = new Float32Array(header.view);
+  st.havePixels = true;
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texDepth);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, dw, dh, 0, gl.RED, gl.FLOAT, dep);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, texConf);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, dw, dh, 0, gl.RED, gl.UNSIGNED_BYTE, st.conf);
+
+  if (rlen && !decoding) {
+    decoding = true;
+    const jpeg = new Uint8Array(buf.slice(off, off + rlen));
+    createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }))
+      .then((bmp) => {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, texColor);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, gl.RGB, gl.UNSIGNED_BYTE, bmp);
+        // Keep a CPU copy at depth resolution so the scan can bake colour in.
+        decodeCtx.drawImage(bmp, 0, 0, st.dw, st.dh);
+        colorPixels = decodeCtx.getImageData(0, 0, st.dw, st.dh).data;
+        bmp.close();
+      })
+      .catch(() => {})
+      .finally(() => { decoding = false; });
+  }
+
+  // Camera path, decimated.
+  const p = [st.camToWorld[12], st.camToWorld[13], st.camToWorld[14]];
+  const last = path[path.length - 1];
+  if (!last || Math.hypot(p[0]-last[0], p[1]-last[1], p[2]-last[2]) > 0.015) {
+    path.push(p);
+    if (path.length > 3000) path.shift();
+  }
+
+  $("s-src").textContent = header.src || "—";
+  $("s-track").textContent = header.track || "—";
+  // Inferred depth has an ambiguous absolute scale, so expose the calibration
+  // slider only when it is actually meaningful.
+  if (String(header.src || "").includes("ml")) $("scale-row").hidden = false;
+  maybeAppendScan();
+}
+
+// ------------------------------- draw --------------------------------------
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+
+const FOVY = 55 * Math.PI / 180;
+
+function displayMatrices() {
+  const aspect = canvas.width / Math.max(canvas.height, 1);
+  const proj = M4.perspective(FOVY, aspect, 0.02, 120);
+  let view;
+  if (st.viewMode === "fpv" && st.havePixels) {
+    view = M4.invRigid(st.camToWorld);
+  } else {
+    let t = cam.target;
+    if (st.viewMode === "follow" && st.havePixels) {
+      t = [st.camToWorld[12], st.camToWorld[13], st.camToWorld[14]];
+    }
+    const cp = Math.cos(cam.pitch);
+    const eye = [ t[0] + cam.dist * cp * Math.sin(cam.yaw),
+                  t[1] + cam.dist * Math.sin(cam.pitch),
+                  t[2] + cam.dist * cp * Math.cos(cam.yaw) ];
+    view = M4.lookAt(eye, t, [0, 1, 0]);
+  }
+  return { proj, view, viewProj: M4.mul(proj, view) };
+}
+
+let lastDraw = performance.now(), drawAcc = 0, drawN = 0;
+
+function draw() {
+  const t0 = performance.now();
+  resize();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.027, 0.031, 0.043, 1);
+  gl.enable(gl.DEPTH_TEST);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const { proj, view, viewProj } = displayMatrices();
+  const focalPx = (canvas.height * 0.5) / Math.tan(FOVY * 0.5);
+
+  buildLines();
+  if (lines.n) {
+    gl.useProgram(progLine);
+    gl.uniformMatrix4fv(uLine.uViewProj, false, viewProj);
+    gl.bindVertexArray(lines.vao);
+    gl.drawArrays(gl.LINES, 0, lines.n);
+  }
+
+  if (scan.n) {
+    gl.useProgram(progScan);
+    gl.uniformMatrix4fv(uScan.uViewProj, false, viewProj);
+    gl.uniformMatrix4fv(uScan.uView, false, view);
+    gl.uniform1f(uScan.uSizeScale, st.sizeScale);
+    gl.uniform1f(uScan.uFocalPx, focalPx);
+    gl.uniform1f(uScan.uGain, st.gain);
+    gl.bindVertexArray(scan.vao);
+    gl.drawArrays(gl.POINTS, 0, scan.n);
+  }
+
+  if (st.havePixels && cloudCount) {
+    gl.useProgram(progCloud);
+    gl.uniform1i(uCloud.uDepth, 0);
+    gl.uniform1i(uCloud.uConf, 1);
+    gl.uniform1i(uCloud.uColor, 2);
+    gl.uniform4fv(uCloud.uIntr, st.intr);
+    gl.uniform2f(uCloud.uDims, st.dw, st.dh);
+    gl.uniformMatrix4fv(uCloud.uCamToWorld, false, st.camToWorld);
+    gl.uniformMatrix4fv(uCloud.uViewProj, false, viewProj);
+    gl.uniformMatrix4fv(uCloud.uView, false, view);
+    gl.uniform1f(uCloud.uNear, st.near);
+    gl.uniform1f(uCloud.uFar, st.far);
+    gl.uniform1f(uCloud.uMinConf, st.minConf);
+    gl.uniform1f(uCloud.uSizeScale, st.sizeScale);
+    gl.uniform1f(uCloud.uFocalPx, focalPx);
+    gl.uniform1f(uCloud.uMode, st.mode);
+    gl.uniform1f(uCloud.uGain, st.gain);
+    gl.uniform1f(uCloud.uDepthScale, st.depthScale);
+    gl.bindVertexArray(vaoCloud);
+    gl.drawArrays(gl.POINTS, 0, cloudCount);
+  }
+  gl.bindVertexArray(null);
+
+  drawAcc += performance.now() - t0; drawN++;
+  if (t0 - lastDraw > 500) {
+    st.drawMs = drawAcc / Math.max(drawN, 1);
+    $("s-draw").textContent = `${st.drawMs.toFixed(1)} ms`;
+    if (st.havePixels) {
+      let live = 0;
+      const d = st.depth, c = st.conf, k = st.depthScale;
+      for (let i = 0; i < d.length; i++) {
+        const dv = d[i] * k;
+        if (dv >= st.near && dv <= st.far && c[i] >= st.minConf) live++;
+      }
+      st.liveCount = live;
+      $("s-pts").textContent = live.toLocaleString();
+    }
+    lastDraw = t0; drawAcc = 0; drawN = 0;
+  }
+  requestAnimationFrame(draw);
+}
+
+// ------------------------------- controls ----------------------------------
+let drag = null;
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 1 || e.button === 2 };
+  canvas.classList.add("dragging");
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) {
+    // Pan in the plane facing the viewer.
+    const s = cam.dist * 0.0022;
+    const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+    cam.target[0] -= (dx * cy) * s;
+    cam.target[2] += (dx * sy) * s;
+    cam.target[1] += dy * s;
+  } else {
+    cam.yaw -= dx * 0.006;
+    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch + dy * 0.005));
+  }
+});
+const endDrag = () => { drag = null; canvas.classList.remove("dragging"); };
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  cam.dist = Math.max(0.15, Math.min(60, cam.dist * Math.exp(e.deltaY * 0.0012)));
+}, { passive: false });
+
+function segGroup(id, attr, cb) {
+  const root = $(id);
+  root.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    [...root.querySelectorAll("button")].forEach((x) =>
+      x.setAttribute("aria-pressed", String(x === b)));
+    cb(b.dataset[attr]);
+  });
+  return root;
+}
+function pressMode(m) {
+  st.mode = +m;
+  [...$("mode").querySelectorAll("button")].forEach((x) =>
+    x.setAttribute("aria-pressed", String(+x.dataset.m === st.mode)));
+}
+segGroup("mode", "m", (m) => { st.mode = +m; });
+segGroup("conf", "c", (c) => { st.minConf = +c; });
+segGroup("viewmode", "v", (v) => { st.viewMode = v; });
+$("toggles").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const k = b.dataset.t;
+  st[k] = !st[k];
+  b.setAttribute("aria-pressed", String(st[k]));
+});
+
+function slider(id, vid, key, fmt) {
+  const el = $(id);
+  const upd = () => { st[key] = +el.value; $(vid).textContent = fmt(+el.value); };
+  el.addEventListener("input", upd); upd();
+}
+slider("near", "v-near", "near", (v) => v.toFixed(2));
+slider("far",  "v-far",  "far",  (v) => v.toFixed(1));
+slider("size", "v-size", "sizeScale", (v) => v.toFixed(1));
+slider("gain", "v-gain", "gain", (v) => v.toFixed(2));
+slider("dscale", "v-scale", "depthScale", (v) => v.toFixed(2));
+
+function syncAccButton() {
+  $("acc").setAttribute("aria-pressed", String(st.building));
+  $("acc").innerHTML = (st.building ? "Stop building" : "Build scan") + " &nbsp;<kbd>B</kbd>";
+}
+$("acc").addEventListener("click", () => {
+  st.building = !st.building;
+  scan.lastPose = null;
+  syncAccButton();
+});
+$("clear").addEventListener("click", () => {
+  scan.n = 0; scan.lastPose = null; path.length = 0;
+  $("s-acc").textContent = "0";
+  $("ply").disabled = true;
+});
+$("reset").addEventListener("click", () => Object.assign(cam, JSON.parse(JSON.stringify(DEF_CAM))));
+
+$("ply").addEventListener("click", () => {
+  const n = scan.n;
+  const head = `ply
+format binary_little_endian 1.0
+comment iPhone LiDAR capture
+element vertex ${n}
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+`;
+  const body = new Uint8Array(n * 15);
+  const dv = new DataView(body.buffer);
+  for (let i = 0; i < n; i++) {
+    const o = i * 15;
+    dv.setFloat32(o, scan.pos[i*3], true);
+    dv.setFloat32(o+4, scan.pos[i*3+1], true);
+    dv.setFloat32(o+8, scan.pos[i*3+2], true);
+    body[o+12] = scan.col[i*3]; body[o+13] = scan.col[i*3+1]; body[o+14] = scan.col[i*3+2];
+  }
+  const blob = new Blob([new TextEncoder().encode(head), body],
+                        { type: "application/octet-stream" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `lidar-scan-${n}.ply`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === "r") $("reset").click();
+  else if (k === "b") $("acc").click();
+  else if (k === "f") {
+    st.viewMode = st.viewMode === "follow" ? "orbit" : "follow";
+    [...$("viewmode").querySelectorAll("button")].forEach((x) =>
+      x.setAttribute("aria-pressed", String(x.dataset.v === st.viewMode)));
+  }
+  else if (k >= "1" && k <= "4") pressMode(+k - 1);
+});
+
+// ------------------------------- websocket ---------------------------------
+const WS_URL = `ws://${location.hostname}:8772`;
+$("splash-ws").innerHTML = `bridge <code>${WS_URL}</code>`;
+// Show the address to type into the phone so it never has to be looked up.
+fetch("/ips").then((r) => r.json()).then((d) => {
+  const lan = d.ips.filter((ip) => !ip.startsWith("172.") && !ip.startsWith("100."));
+  if (lan.length) {
+    $("splash-ws").innerHTML =
+      "point the app at &nbsp;" +
+      lan.map((ip) => `<code>${ip}:${d.port}</code>`).join(" &nbsp;or&nbsp; ");
+  }
+}).catch(() => {});
+let ws = null, retry = 0;
+
+function setLink(state, text) {
+  $("dot").className = "dot" + (state === "on" ? " on" : state === "warn" ? " warn" : "");
+  $("s-link").textContent = text;
+}
+
+function connect() {
+  setLink("warn", "connecting");
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { retry = 0; setLink("warn", "bridge up"); };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      const m = JSON.parse(ev.data);
+      const dev = m.device || {};
+      $("s-dev").textContent = dev.name || dev.model || "—";
+      const stale = m.stale;
+      if (m.frames > 0 && stale !== null && stale < 2.5) {
+        setLink("on", "streaming");
+        $("splash").classList.add("hide");
+      } else {
+        setLink("warn", m.frames ? "phone idle" : "bridge up");
+      }
+      $("s-fps").textContent = m.fps ? `${m.fps} fps` : "—";
+      $("s-bw").textContent = m.kbps ? `${m.kbps} KiB/s` : "—";
+      if (m.depth) {
+        $("s-infer").textContent =
+          `${m.depth.ms} ms` + (m.depth.skipped ? ` · ${m.depth.skipped} skip` : "");
+      }
+      return;
+    }
+    try { onFrame(ev.data); }
+    catch (err) { console.error("frame decode failed", err); }
+    $("splash").classList.add("hide");
+    setLink("on", "streaming");
+  };
+  ws.onclose = () => {
+    setLink("off", "bridge down");
+    retry = Math.min(retry + 1, 10);
+    setTimeout(connect, 400 * retry);
+  };
+  ws.onerror = () => {};
+}
+
+syncAccButton();
+connect();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

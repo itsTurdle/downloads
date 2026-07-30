@@ -1,0 +1,74 @@
+# Builds an unsigned LidarStream.ipa on a macOS runner, because Xcode does not run
+# on Windows. Download the artifact and install it with Sideloadly, which applies the
+# signature locally using your own Apple ID.
+
+name: build-ipa
+
+on:
+  workflow_dispatch:
+  push:
+    # This tree lives on its own branch of a repo used for other things, so scope the
+    # trigger to that branch rather than firing on unrelated pushes.
+    branches:
+      - iphone-lidar
+    paths:
+      - "ios/**"
+      - ".github/workflows/build-ipa.yml"
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build unsigned
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LidarStream.xcodeproj \
+            -scheme LidarStream \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::no .app was produced"
+            exit 1
+          fi
+          echo "packaging $APP"
+          # An IPA is just a zip with the bundle under Payload/.
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry LidarStream.ipa Payload
+          ls -lh LidarStream.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LidarStream-ipa
+          path: ios/LidarStream.ipa
+          if-no-files-found: error
