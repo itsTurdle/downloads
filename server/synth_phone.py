@@ -199,7 +199,7 @@ def orbit_view(t: float) -> np.ndarray:
 
 
 async def run(host: str, port: int, fps: float, jpeg_quality: int,
-              rgb_only: bool = False):
+              rgb_only: bool = False, still: bool = False):
     reader, writer = await asyncio.open_connection(host, port)
     print(f"[synth] connected to {host}:{port}"
           f" ({'rgb only' if rgb_only else 'lidar'})", flush=True)
@@ -223,8 +223,15 @@ async def run(host: str, port: int, fps: float, jpeg_quality: int,
         while True:
             started = time.monotonic()
             t = started - t0
-            view = orbit_view(t)
-            depth_mm, conf, rgb = render(view, i)
+            # A fixed pose would otherwise produce byte-identical JPEGs, which the
+            # model maps to identical depth -- no jitter to stabilise, so no test.
+            # Real grain is what makes the prediction wander.
+            view = orbit_view(0.0 if still else t)
+            depth_mm, conf, rgb = render(view, 0 if still else i)
+
+            if still:
+                grain = np.random.default_rng(i).normal(0, 2.5, rgb.shape)
+                rgb = np.clip(rgb.astype(np.float32) + grain, 0, 255).astype(np.uint8)
 
             buf = io.BytesIO()
             Image.fromarray(rgb).save(buf, format="JPEG", quality=jpeg_quality)
@@ -269,6 +276,9 @@ if __name__ == "__main__":
     ap.add_argument("--quality", type=int, default=70)
     ap.add_argument("--rgb-only", action="store_true",
                     help="send colour + pose only, like a phone with no LiDAR")
+    ap.add_argument("--still", action="store_true",
+                    help="hold the camera fixed, with camera-like grain per frame, "
+                         "for A/B testing temporal stabilisation on identical input")
     ap.add_argument("--width", type=int, default=0,
                     help="render width (defaults to 256, or 640 with --rgb-only)")
     a = ap.parse_args()
@@ -277,6 +287,6 @@ if __name__ == "__main__":
     configure(width, int(round(width * 3 / 4)))
 
     try:
-        asyncio.run(run(a.host, a.port, a.fps, a.quality, a.rgb_only))
+        asyncio.run(run(a.host, a.port, a.fps, a.quality, a.rgb_only, a.still))
     except KeyboardInterrupt:
         pass

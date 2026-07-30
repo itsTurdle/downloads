@@ -1,15 +1,20 @@
-"""Receive an iPhone LiDAR stream and fan it out to browser clients.
+"""Receive depth (or colour) from a phone and fan it out to browser clients.
 
     python lidar_server.py
 
-Listens on three ports:
+Ports:
 
-    8770  HTTP     the point-cloud display (../web)
-    8771  TCP      frames in from the iPhone app
-    8772  WS       frames out to the browser
+    8770   pages + WebSocket, plaintext
+    8443   the same, over TLS -- iOS grants the camera only on a secure origin
+    8771   raw TCP, frames in from the native iOS app
 
-Depth arrives zlib-compressed and leaves raw: inflating here costs ~0.3 ms of native
-zlib per frame and saves shipping an inflate implementation to the page.
+Pages and the WebSocket deliberately share a port: a quick tunnel
+(`cloudflared tunnel --url http://localhost:8770`) forwards exactly one, and a tunnel
+is the only way to get a genuinely trusted certificate for a LAN address.
+
+Depth from the native app arrives raw-DEFLATE and leaves raw; inflating here costs
+~0.3 ms of native zlib and saves shipping an inflate implementation to the page. A
+phone with no scanner sends only colour, and depth_model.py supplies the depth.
 """
 
 import argparse
@@ -196,11 +201,15 @@ async def ingest(header: dict, depth: bytes, conf: bytes, rgb: bytes, raw_in: in
         result = await depth_worker.infer(rgb)
         if result is None:
             return                          # GPU still busy; skip rather than lag
-        depth, dw, dh = result
+        depth, dw, dh, mask = result
         rescale_intrinsics(header, header.get("iw", dw), header.get("ih", dh), dw, dh)
         header["dw"], header["dh"] = dw, dh
         header["src"] = f"{header.get('src') or 'rgb'}+ml"
-        conf = b""                          # inference has no confidence channel
+        # Inference has no confidence channel, so in stationary mode that slot carries
+        # the motion mask instead. The header says which, so the viewer never has to
+        # guess what the byte means.
+        conf = mask
+        header["mask"] = "motion" if mask else "none"
 
     if not depth:
         return
@@ -293,14 +302,63 @@ async def handle_phone(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
             await writer.wait_closed()
 
 
+SETTABLE = {"smooth", "smooth_static", "stationary", "bg_alpha", "motion_m",
+            "ref_alpha", "max_corr", "jump_m", "scale"}
+
+
+def apply_settings(patch: dict) -> dict:
+    """Let the viewer retune the depth pipeline live. Restarting the bridge to try a
+    different smoothing value means reloading the model, which is far too slow to
+    iterate with."""
+    est = depth_worker.est if depth_worker else None
+    if est is None:
+        return {}
+    applied = {}
+    for k, v in patch.items():
+        if k not in SETTABLE:
+            continue
+        cur = getattr(est, k, None)
+        try:
+            v = bool(v) if isinstance(cur, bool) else float(v)
+        except (TypeError, ValueError):
+            continue
+        setattr(est, k, v)
+        applied[k] = v
+    if "stationary" in applied:
+        # Averages built for one camera pose are meaningless for another.
+        est.reset_temporal()
+    return applied
+
+
 async def handle_browser(ws):
     q = hub.add(ws)
     print(f"[ws] browser connected ({len(hub.clients)} total)", flush=True)
+
+    async def pump():
+        while True:
+            await ws.send(await q.get())
+
+    async def control():
+        async for msg in ws:
+            if not isinstance(msg, str):
+                continue
+            try:
+                m = json.loads(msg)
+            except json.JSONDecodeError:
+                continue
+            if m.get("type") == "set":
+                applied = apply_settings(m)
+                if applied:
+                    print(f"[set] {applied}", flush=True)
+            elif m.get("type") == "reset" and depth_worker:
+                depth_worker.est.reset_temporal()
+                print("[set] temporal state reset", flush=True)
+
     try:
         await ws.send(json.dumps({"type": "hello", **hub.stats()}))
-        while True:
-            payload = await q.get()
-            await ws.send(payload)
+        # Reading and writing concurrently: the viewer both receives frames and sends
+        # settings, and a single loop would block one on the other.
+        await asyncio.gather(pump(), control())
     except ConnectionClosed:
         pass
     finally:
@@ -413,7 +471,7 @@ async def main():
                     help="do not load monocular depth; LiDAR phones only")
     ap.add_argument("--depth-input", type=int, default=518,
                     help="model input height (518 is the checkpoint's native size)")
-    ap.add_argument("--depth-out", type=int, default=384,
+    ap.add_argument("--depth-out", type=int, default=512,
                     help="width of the inferred depth map sent to the viewer")
     ap.add_argument("--depth-scale", type=float, default=1.0,
                     help="multiplier on inferred metres, for calibration")

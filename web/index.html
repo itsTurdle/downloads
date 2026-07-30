@@ -135,13 +135,29 @@
 </div>
 
 <div id="ctl" class="panel">
+  <div class="sect">Render</div>
+  <div class="seg" id="style">
+    <button data-s="surface" aria-pressed="true">surface</button>
+    <button data-s="wire">wire</button>
+    <button data-s="points">points</button>
+  </div>
+
   <div class="sect">Colour</div>
   <div class="seg" id="mode">
     <button data-m="0" aria-pressed="true">camera</button>
     <button data-m="1">depth</button>
-    <button data-m="2">confid</button>
+    <button data-m="2">motion</button>
     <button data-m="3">normal</button>
+    <button data-m="4">contour</button>
   </div>
+
+  <div class="sect">Stationary camera</div>
+  <button class="btn pri" id="stat" aria-pressed="false">Assume camera is still</button>
+  <div class="seg" id="statmodes" style="margin-top:6px">
+    <button data-x="motionOnly">only motion</button>
+  </div>
+  <div class="note" id="statnote">Averages far harder for a much cleaner surface, and
+    flags whatever moves against the static background.</div>
 
   <div class="sect">Filters</div>
   <label class="sl"><span class="lab">near clip <b id="v-near">0.10</b> m</span>
@@ -161,6 +177,17 @@
     <input type="range" id="size" min="0.2" max="4" step="0.1" value="1"></label>
   <label class="sl"><span class="lab">brightness <b id="v-gain">1.0</b>×</span>
     <input type="range" id="gain" min="0.3" max="2.5" step="0.05" value="1"></label>
+  <label class="sl"><span class="lab">edge cutoff <b id="v-edge">0.06</b></span>
+    <input type="range" id="edge" min="0.01" max="0.4" step="0.01" value="0.06"></label>
+  <label class="sl"><span class="lab">contour density <b id="v-cont">8</b>/m</span>
+    <input type="range" id="cont" min="1" max="30" step="1" value="8"></label>
+
+  <div class="sect">Stability</div>
+  <label class="sl"><span class="lab">temporal smoothing <b id="v-sm">0.60</b></span>
+    <input type="range" id="sm" min="0" max="0.95" step="0.05" value="0.6"></label>
+  <div class="note">Inferred depth is predicted per frame with no memory, so it boils
+    and breathes. Measured 0.055&nbsp;m of per-pixel wobble and 1%&nbsp;of scale drift
+    with the camera held still.</div>
 
   <div class="sect">Scan</div>
   <button class="btn pri" id="acc" aria-pressed="false">Build scan &nbsp;<kbd>B</kbd></button>
@@ -399,6 +426,110 @@ void main(){
   frag = vec4(vColor, 1.0 - smoothstep(0.55, 1.0, r2));
 }`;
 
+// Solid surface: the depth grid triangulated, so you see a continuous lit surface
+// instead of a field of discrete sprites. Triangles that straddle a depth
+// discontinuity are dropped, otherwise every silhouette grows a rubber sheet
+// stretching back to whatever is behind it.
+const MESH_VS = `#version 300 es
+precision highp float;
+in vec2 aPix;
+uniform sampler2D uDepth, uConf, uColor;
+uniform vec4 uIntr;
+uniform vec2 uDims;
+uniform mat4 uCamToWorld, uViewProj;
+uniform float uNear, uFar, uMode, uGain, uDepthScale, uEdgeTol, uContour;
+uniform float uMinConf, uMaskMotion;
+out vec3 vColor;
+out vec3 vNormal;
+out float vValid;
+out float vDepth;
+out float vMotion;
+${TURBO}
+
+float sampleDepth(vec2 p){
+  return texture(uDepth, (p + 0.5) / uDims).r * uDepthScale;
+}
+vec3 unproject(vec2 p){
+  float dd = sampleDepth(p);
+  if (dd <= 0.0) return vec3(0.0);
+  return vec3( (p.x + 0.5 - uIntr.z) / uIntr.x * dd,
+              -(p.y + 0.5 - uIntr.w) / uIntr.y * dd,
+              -dd );
+}
+
+void main(){
+  vec2 uv = (aPix + 0.5) / uDims;
+  vec3 c = unproject(aPix);
+  float d = -c.z;
+  float mot = texture(uConf, uv).r * 255.0;
+  vMotion = mot;
+
+  bool ok = d >= uNear && d <= uFar;
+  if (uMaskMotion < 0.5 && mot < uMinConf) ok = false;
+
+  vec3 pr = unproject(aPix + vec2(1.0, 0.0));
+  vec3 pd = unproject(aPix + vec2(0.0, 1.0));
+  float dr = -pr.z, dl = -pd.z;
+  if (dr <= 0.0 || dl <= 0.0) ok = false;
+
+  // A step much bigger than the local sample spacing is an edge, not a surface.
+  float tol = uEdgeTol * max(d, 0.2);
+  if (abs(dr - d) > tol || abs(dl - d) > tol) ok = false;
+
+  // Ordered so a surface facing the camera ends up with a normal pointing back at it.
+  vec3 n = normalize(cross(pd - c, pr - c));
+  vec4 world = uCamToWorld * vec4(c, 1.0);
+  vNormal = mat3(uCamToWorld) * n;
+  vDepth = d;
+  vValid = ok ? 1.0 : 0.0;
+  gl_Position = uViewProj * world;
+
+  if (uMode < 0.5) {
+    vColor = texture(uColor, uv).rgb;
+  } else if (uMode < 1.5) {
+    vColor = turbo((d - uNear) / max(uFar - uNear, 0.01));
+  } else if (uMode < 2.5) {
+    vColor = mot > 8.0 ? mix(vec3(0.15,0.5,0.9), vec3(1.0,0.35,0.3), min(mot/128.0,1.0))
+                       : vec3(0.30, 0.33, 0.38);
+  } else if (uMode < 3.5) {
+    vColor = vNormal * 0.5 + 0.5;
+  } else {
+    // Topographic banding: contour lines at fixed depth intervals.
+    float band = fract(d * uContour);
+    float line = smoothstep(0.0, 0.06, band) * smoothstep(1.0, 0.94, band);
+    vColor = mix(vec3(0.02,0.05,0.08), turbo((d - uNear) / max(uFar - uNear, 0.01)),
+                 0.25 + 0.75 * line);
+  }
+  vColor *= uGain;
+}`;
+
+const MESH_FS = `#version 300 es
+precision highp float;
+in vec3 vColor;
+in vec3 vNormal;
+in float vValid;
+in float vDepth;
+in float vMotion;
+uniform float uLit, uMotionOnly;
+out vec4 frag;
+void main(){
+  // Any triangle touching an invalid vertex interpolates below 1 across most of its
+  // area, which is what removes it.
+  if (vValid < 0.995) discard;
+  if (uMotionOnly > 0.5 && vMotion < 10.0) discard;
+
+  vec3 col = vColor;
+  if (uLit > 0.5) {
+    vec3 n = normalize(vNormal);
+    vec3 key = normalize(vec3(0.4, 0.9, 0.35));
+    float lam = max(dot(n, key), 0.0);
+    float fill = max(dot(n, normalize(vec3(-0.5, 0.2, 0.8))), 0.0);
+    float rim = pow(1.0 - abs(n.z), 2.0);
+    col = col * (0.30 + 0.70 * lam + 0.18 * fill) + rim * 0.10;
+  }
+  frag = vec4(col, 1.0);
+}`;
+
 // Accumulated scan: real world-space vertices with baked colour.
 const SCAN_VS = `#version 300 es
 precision highp float;
@@ -429,9 +560,11 @@ out vec4 frag;
 void main(){ frag = vec4(vColor, 1.0); }`;
 
 const progCloud = program(CLOUD_VS, CLOUD_FS);
+const progMesh  = program(MESH_VS,  MESH_FS);
 const progScan  = program(SCAN_VS,  CLOUD_FS);
 const progLine  = program(LINE_VS,  LINE_FS);
-const uCloud = uniforms(progCloud), uScan = uniforms(progScan), uLine = uniforms(progLine);
+const uCloud = uniforms(progCloud), uMesh = uniforms(progMesh);
+const uScan = uniforms(progScan), uLine = uniforms(progLine);
 
 // ------------------------------- state -------------------------------------
 const st = {
@@ -442,6 +575,12 @@ const st = {
   conf: null,                // Uint8Array
   havePixels: false,
   mode: 0, near: 0.1, far: 6, minConf: 1, sizeScale: 1, gain: 1, depthScale: 1,
+  style: "surface",       // surface | wire | points
+  edgeTol: 0.06,          // depth step, relative to distance, that counts as an edge
+  contour: 8,             // contour bands per metre
+  maskMotion: false,      // conf byte carries a motion mask rather than confidence
+  motionOnly: false,      // draw only what moved against the static background
+  stationary: false,
   grid: true, frustum: true, trail: true,
   viewMode: "orbit",
   building: false,
@@ -472,23 +611,70 @@ gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE,
               new Uint8Array([128, 132, 140]));
 
 // ------------------------------- geometry ----------------------------------
-let vaoCloud = null, cloudCount = 0;
+let vaoCloud = null, vaoMesh = null, cloudCount = 0;
+let idxTri = null, triCount = 0, idxWire = null, wireCount = 0;
+
 function buildCloudGeometry(w, h) {
-  if (vaoCloud) gl.deleteVertexArray(vaoCloud);
   const pix = new Float32Array(w * h * 2);
   for (let y = 0, i = 0; y < h; y++) {
     for (let x = 0; x < w; x++) { pix[i++] = x; pix[i++] = y; }
   }
-  vaoCloud = gl.createVertexArray();
-  gl.bindVertexArray(vaoCloud);
-  const b = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
   gl.bufferData(gl.ARRAY_BUFFER, pix, gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(progCloud, "aPix");
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  gl.bindVertexArray(null);
+
+  const bind = (prog) => {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    const loc = gl.getAttribLocation(prog, "aPix");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    return vao;
+  };
+  if (vaoCloud) gl.deleteVertexArray(vaoCloud);
+  if (vaoMesh) gl.deleteVertexArray(vaoMesh);
+  vaoCloud = bind(progCloud);
+  vaoMesh = bind(progMesh);
   cloudCount = w * h;
+
+  // Two triangles per grid cell. Uint32 indices are core in WebGL2, and a
+  // 512x384 grid needs 196k vertices, well past the 16-bit limit.
+  const tris = new Uint32Array((w - 1) * (h - 1) * 6);
+  let t = 0;
+  for (let y = 0; y < h - 1; y++) {
+    for (let x = 0; x < w - 1; x++) {
+      const a = y * w + x, b = a + 1, c = a + w, d = c + 1;
+      tris[t++] = a; tris[t++] = c; tris[t++] = d;
+      tris[t++] = a; tris[t++] = d; tris[t++] = b;
+    }
+  }
+  if (idxTri) gl.deleteBuffer(idxTri);
+  idxTri = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxTri);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, tris, gl.STATIC_DRAW);
+  triCount = t;
+
+  // Wireframe: one horizontal and one vertical segment per cell. Cheaper and
+  // cleaner than deriving edges from the triangle list.
+  const step = 2;   // every other line, or the mesh reads as solid fill
+  const lines = [];
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w - step; x += step) {
+      lines.push(y * w + x, y * w + x + step);
+    }
+  }
+  for (let x = 0; x < w; x += step) {
+    for (let y = 0; y < h - step; y += step) {
+      lines.push(y * w + x, (y + step) * w + x);
+    }
+  }
+  if (idxWire) gl.deleteBuffer(idxWire);
+  idxWire = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxWire);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(lines), gl.STATIC_DRAW);
+  wireCount = lines.length;
+  gl.bindVertexArray(null);
 }
 
 // Accumulated scan buffers. Preallocated so appending never reallocates.
@@ -720,6 +906,9 @@ function onFrame(buf) {
   // Inferred depth has an ambiguous absolute scale, so expose the calibration
   // slider only when it is actually meaningful.
   if (String(header.src || "").includes("ml")) $("scale-row").hidden = false;
+  // In stationary mode the confidence byte carries a motion magnitude instead, so the
+  // confidence threshold must not be applied to it.
+  st.maskMotion = header.mask === "motion";
   maybeAppendScan();
 }
 
@@ -784,7 +973,38 @@ function draw() {
     gl.drawArrays(gl.POINTS, 0, scan.n);
   }
 
-  if (st.havePixels && cloudCount) {
+  if (st.havePixels && cloudCount && st.style !== "points") {
+    // Surface / wireframe: one indexed draw over the triangulated depth grid.
+    gl.useProgram(progMesh);
+    gl.uniform1i(uMesh.uDepth, 0);
+    gl.uniform1i(uMesh.uConf, 1);
+    gl.uniform1i(uMesh.uColor, 2);
+    gl.uniform4fv(uMesh.uIntr, st.intr);
+    gl.uniform2f(uMesh.uDims, st.dw, st.dh);
+    gl.uniformMatrix4fv(uMesh.uCamToWorld, false, st.camToWorld);
+    gl.uniformMatrix4fv(uMesh.uViewProj, false, viewProj);
+    gl.uniform1f(uMesh.uNear, st.near);
+    gl.uniform1f(uMesh.uFar, st.far);
+    gl.uniform1f(uMesh.uMode, st.mode);
+    gl.uniform1f(uMesh.uGain, st.gain);
+    gl.uniform1f(uMesh.uDepthScale, st.depthScale);
+    gl.uniform1f(uMesh.uEdgeTol, st.edgeTol);
+    gl.uniform1f(uMesh.uContour, st.contour);
+    gl.uniform1f(uMesh.uMinConf, st.minConf);
+    gl.uniform1f(uMesh.uMaskMotion, st.maskMotion ? 1 : 0);
+    gl.uniform1f(uMesh.uLit, st.style === "wire" ? 0 : 1);
+    gl.uniform1f(uMesh.uMotionOnly, st.motionOnly ? 1 : 0);
+    gl.bindVertexArray(vaoMesh);
+    if (st.style === "wire") {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxWire);
+      gl.drawElements(gl.LINES, wireCount, gl.UNSIGNED_INT, 0);
+    } else {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxTri);
+      gl.drawElements(gl.TRIANGLES, triCount, gl.UNSIGNED_INT, 0);
+    }
+  }
+
+  if (st.havePixels && cloudCount && st.style === "points") {
     gl.useProgram(progCloud);
     gl.uniform1i(uCloud.uDepth, 0);
     gl.uniform1i(uCloud.uConf, 1);
@@ -814,9 +1034,10 @@ function draw() {
     if (st.havePixels) {
       let live = 0;
       const d = st.depth, c = st.conf, k = st.depthScale;
+      const minC = st.maskMotion ? 0 : st.minConf;
       for (let i = 0; i < d.length; i++) {
         const dv = d[i] * k;
-        if (dv >= st.near && dv <= st.far && c[i] >= st.minConf) live++;
+        if (dv >= st.near && dv <= st.far && c[i] >= minC) live++;
       }
       st.liveCount = live;
       $("s-pts").textContent = live.toLocaleString();
@@ -927,6 +1148,29 @@ function pressMode(m) {
 segGroup("mode", "m", (m) => { st.mode = +m; });
 segGroup("conf", "c", (c) => { st.minConf = +c; });
 segGroup("viewmode", "v", (v) => { st.viewMode = v; });
+segGroup("style", "s", (s) => { st.style = s; });
+
+// Settings the server owns; changing them here retunes the live pipeline instead of
+// needing a restart (which would reload the depth model).
+function pushSettings(patch) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "set", ...patch }));
+  }
+}
+$("stat").addEventListener("click", () => {
+  st.stationary = !st.stationary;
+  $("stat").setAttribute("aria-pressed", String(st.stationary));
+  $("stat").textContent = st.stationary ? "Camera is still (averaging)"
+                                        : "Assume camera is still";
+  pushSettings({ stationary: st.stationary });
+});
+$("statmodes").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const k = b.dataset.x;
+  st[k] = !st[k];
+  b.setAttribute("aria-pressed", String(st[k]));
+});
 $("toggles").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
@@ -945,6 +1189,17 @@ slider("far",  "v-far",  "far",  (v) => v.toFixed(1));
 slider("size", "v-size", "sizeScale", (v) => v.toFixed(1));
 slider("gain", "v-gain", "gain", (v) => v.toFixed(2));
 slider("dscale", "v-scale", "depthScale", (v) => v.toFixed(2));
+slider("edge", "v-edge", "edgeTol", (v) => v.toFixed(2));
+slider("cont", "v-cont", "contour", (v) => v.toFixed(0));
+{
+  const el = $("sm");
+  const upd = () => {
+    $("v-sm").textContent = (+el.value).toFixed(2);
+    pushSettings({ smooth: +el.value, smooth_static: Math.max(+el.value, 0.85) });
+  };
+  el.addEventListener("change", upd);
+  el.addEventListener("input", () => { $("v-sm").textContent = (+el.value).toFixed(2); });
+}
 
 function syncAccButton() {
   $("acc").setAttribute("aria-pressed", String(st.building));
