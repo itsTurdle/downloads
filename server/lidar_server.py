@@ -303,7 +303,8 @@ async def handle_phone(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
 
 
 SETTABLE = {"smooth", "smooth_static", "stationary", "bg_alpha", "motion_m",
-            "ref_alpha", "max_corr", "jump_m", "scale"}
+            "ref_alpha", "max_corr", "jump_m", "scale",
+            "dev_alpha", "dev_k", "dev_floor", "motion_blur"}
 
 
 def apply_settings(patch: dict) -> dict:

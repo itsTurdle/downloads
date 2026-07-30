@@ -34,6 +34,27 @@ def _round_to_patch(v: int) -> int:
     return max(PATCH, int(round(v / PATCH)) * PATCH)
 
 
+def _box_blur(a: np.ndarray, r: int) -> np.ndarray:
+    """Separable box mean with radius r, via summed-area in each axis.
+
+    Real motion covers a contiguous patch; depth noise does not. Requiring a
+    neighbourhood to agree is what separates the two, and this is cheap enough
+    (~1 ms at 512x683) to run every frame.
+    """
+    r = int(r)          # may arrive as a float from the live settings channel
+    if r < 1:
+        return a
+    k = 2 * r + 1
+    pad = np.pad(a, ((r, r), (0, 0)), mode="edge")
+    c = np.cumsum(pad, axis=0)
+    out = np.empty_like(a)
+    out[:] = (c[k - 1:] - np.vstack([np.zeros((1, a.shape[1]), a.dtype), c[:-k]])) / k
+    pad = np.pad(out, ((0, 0), (r, r)), mode="edge")
+    c = np.cumsum(pad, axis=1)
+    res = (c[:, k - 1:] - np.hstack([np.zeros((a.shape[0], 1), a.dtype), c[:, :-k]])) / k
+    return res
+
+
 class DepthEstimator:
     """Not thread-safe by design: the bridge drives it from a single worker thread
     and drops frames while it is busy, rather than queueing stale work."""
@@ -77,7 +98,11 @@ class DepthEstimator:
         # of whatever moved in front of an otherwise static scene.
         self.stationary = False
         self.bg_alpha = 0.02        # background adapts over ~5 s
-        self.motion_m = 0.12        # depth change counting as full-strength motion
+        self.motion_m = 0.12        # excursion beyond the noise floor = full strength
+        self.dev_alpha = 0.03       # how fast each pixel learns its own noise level
+        self.dev_k = 3.0            # excursions must beat this many times that noise
+        self.dev_floor = 0.02       # never trust a pixel to be quieter than this
+        self.motion_blur = 3        # neighbourhood radius that must agree
 
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA requested but unavailable")
@@ -115,7 +140,7 @@ class DepthEstimator:
         """
         s = self._state.get(shape)
         if s is None:
-            s = {"prev": None, "bg": None, "ref": None}
+            s = {"prev": None, "bg": None, "ref": None, "dev": None}
             self._state[shape] = s
         return s
 
@@ -149,15 +174,54 @@ class DepthEstimator:
         return depth
 
     def _motion_mask(self, depth: np.ndarray) -> bytes:
-        """0..255 per pixel: how far this pixel is from the long-term background."""
+        """0..255 per pixel: confidence that this pixel actually moved.
+
+        A plain |depth - background| threshold does not work on a real camera. Measured
+        on a still iPhone it flagged 93% of the frame, because the deviation from
+        background is dominated by things that are not motion:
+
+          * a uniform shift of the whole frame (0.090 m sd) as the model's global scale
+            and the camera's exposure drift -- removed here by subtracting the median
+            deviation, which no real object can produce
+          * per-pixel instability (0.155 m sd) that is wildly uneven across the image:
+            blank walls and screens are inherently ambiguous to a monocular model and
+            never settle, while textured geometry is stable
+
+        So the threshold is per-pixel and learned: each pixel tracks its own mean
+        absolute deviation, and only excursions well beyond a pixel's own habitual
+        noise count. Chronically unstable regions raise their own bar instead of
+        firing forever. A final box blur demands spatial agreement, since motion
+        arrives as a patch and noise does not.
+        """
         s = self._slot(depth.shape)
         if s["bg"] is None or s["bg"].shape != depth.shape:
             s["bg"] = depth.copy()
-        else:
-            s["bg"] += self.bg_alpha * (depth - s["bg"])
-        diff = np.abs(depth - s["bg"])
-        return (np.clip(diff / max(self.motion_m, 1e-3), 0, 1)
-                * 255).astype(np.uint8).tobytes()
+            s["dev"] = np.full_like(depth, self.motion_m)
+            return b"\x00" * depth.size
+
+        diff = depth - s["bg"]
+        # Kill the global component; a whole-frame shift is drift, never an object.
+        diff = diff - float(np.median(diff))
+        absd = np.abs(diff)
+
+        # Provisional score against the noise floor learned so far.
+        dev = s["dev"]
+        score = (absd - self.dev_k * dev) / max(self.motion_m, 1e-3)
+        np.clip(score, 0.0, 1.0, out=score)
+        score = _box_blur(score, self.motion_blur)
+
+        # Neither the noise floor nor the background may learn from pixels that are
+        # currently moving. Letting `dev` absorb an object's own deviation raises its
+        # threshold until it disappears -- measured at only 51% of a solid object
+        # detected before this gate, because a passing object trained the detector to
+        # ignore itself. Same reasoning for `bg`: someone standing still would
+        # otherwise dissolve into the background.
+        quiet = score < 0.2
+        dev += self.dev_alpha * (absd - dev) * quiet
+        np.maximum(dev, self.dev_floor, out=dev)
+        s["bg"] += self.bg_alpha * diff * quiet
+
+        return (score * 255).astype(np.uint8).tobytes()
 
     def _warm(self):
         """Run once so kernel autotuning does not land on the first real frame."""
