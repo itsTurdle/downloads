@@ -179,9 +179,9 @@ struct ContentView: View {
         }
     }
 
-    private func unsupported(_ title: String, _ body: String) -> some View {
+    private func unsupported(_ title: String, _ message: String) -> some View {
         card(title) {
-            Text(body).font(.callout).foregroundStyle(.secondary)
+            Text(message).font(.callout).foregroundStyle(.secondary)
             Text("Model: \(deviceModelIdentifier())")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.tertiary)
