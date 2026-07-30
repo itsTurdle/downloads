@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>iPhone LiDAR</title>
 <link rel="icon" href="data:,"><!-- suppress the favicon request rather than 404 it -->
 <style>
@@ -15,7 +15,8 @@
     font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   /* canvas is a replaced element: inset:0 alone leaves width:auto at the intrinsic
      300x150, so the size has to be stated explicitly. */
-  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:grab}
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:grab;
+    touch-action:none}   /* we handle pan/pinch ourselves */
   #gl.dragging{cursor:grabbing}
 
   .panel{position:fixed;background:var(--panel);border:1px solid var(--line);
@@ -67,6 +68,41 @@
   kbd{background:rgba(255,255,255,.09);border:1px solid var(--line);border-radius:3px;
     padding:1px 5px;font:inherit;font-size:10.5px;color:var(--ink)}
 
+  /* Sheet toggle: only used on narrow screens. */
+  #sheetBtn{display:none;position:fixed;z-index:12;right:12px;
+    bottom:calc(12px + env(safe-area-inset-bottom));
+    padding:13px 18px;font:600 14px/1 inherit;color:#04121a;background:var(--accent);
+    border:0;border-radius:99px;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+  #hud h1{cursor:default}
+
+  /* ---- phones ------------------------------------------------------------
+     The three floating panels are sized for a desktop window and overlap badly
+     on a phone, so collapse the HUD, hide the keyboard legend, and turn the
+     control column into a bottom sheet behind a button. */
+  @media (max-width: 760px), (max-height: 460px) {
+    #help{display:none}
+
+    #hud{left:8px;right:8px;top:calc(8px + env(safe-area-inset-top));min-width:0;
+      padding:10px 12px;font-size:12px}
+    #hud h1{margin:0;cursor:pointer;display:flex;justify-content:space-between}
+    #hud h1::after{content:"▾";transition:transform .18s}
+    #hud.collapsed h1{margin:0}
+    #hud.collapsed h1::after{transform:rotate(-90deg)}
+    #hud.collapsed .row{display:none}
+    #hud.collapsed .row.keep{display:flex;padding-top:8px}
+
+    #sheetBtn{display:block}
+    #ctl{left:8px;right:8px;width:auto;top:auto;
+      bottom:calc(70px + env(safe-area-inset-bottom));
+      max-height:min(58vh, 460px);transform:translateY(12px);
+      opacity:0;pointer-events:none;transition:opacity .18s,transform .18s}
+    #ctl.open{opacity:1;transform:none;pointer-events:auto}
+    .seg button{min-width:0;padding:10px 4px;font-size:12px}
+    .btn{padding:12px}
+    input[type=range]{height:4px}
+    input[type=range]::-webkit-slider-thumb{width:22px;height:22px}
+  }
+
   #splash{position:fixed;inset:0;display:grid;place-items:center;background:rgba(7,8,11,.94);
     text-align:center;z-index:20;transition:opacity .4s;padding:24px}
   #splash.hide{opacity:0;pointer-events:none}
@@ -81,15 +117,17 @@
 <body>
 <canvas id="gl"></canvas>
 
+<button id="sheetBtn" aria-expanded="false">Controls</button>
+
 <div id="hud" class="panel">
-  <h1>Sensor</h1>
-  <div class="row"><span><i id="dot" class="dot"></i>link</span><span id="s-link">waiting</span></div>
+  <h1 id="hudTitle">Sensor</h1>
+  <div class="row keep"><span><i id="dot" class="dot"></i>link</span><span id="s-link">waiting</span></div>
   <div class="row"><span>device</span><span id="s-dev">—</span></div>
   <div class="row"><span>source</span><span id="s-src">—</span></div>
   <div class="row"><span>tracking</span><span id="s-track">—</span></div>
   <div class="row"><span>depth</span><span id="s-dims">—</span></div>
   <div class="row"><span>inference</span><span id="s-infer">—</span></div>
-  <div class="row"><span>stream</span><span id="s-fps">—</span></div>
+  <div class="row keep"><span>stream</span><span id="s-fps">—</span></div>
   <div class="row"><span>bandwidth</span><span id="s-bw">—</span></div>
   <div class="row"><span>live points</span><span id="s-pts">—</span></div>
   <div class="row"><span>scan points</span><span id="s-acc">0</span></div>
@@ -789,36 +827,86 @@ function draw() {
 }
 
 // ------------------------------- controls ----------------------------------
-let drag = null;
+// One pointer orbits; two pointers pinch-zoom and pan. Tracking pointers in a map
+// rather than a single `drag` object is what makes touch work at all -- on a phone
+// there is no wheel to zoom with and no shift key to pan with.
+const ptrs = new Map();
+let gesture = null;   // {dist, cx, cy} snapshot while two pointers are down
+
+function orbitBy(dx, dy) {
+  cam.yaw -= dx * 0.006;
+  cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch + dy * 0.005));
+}
+function panBy(dx, dy) {
+  const s = cam.dist * 0.0022;
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+  cam.target[0] -= (dx * cy) * s;
+  cam.target[2] += (dx * sy) * s;
+  cam.target[1] += dy * s;
+}
+function zoomBy(factor) {
+  cam.dist = Math.max(0.15, Math.min(60, cam.dist * factor));
+}
+function twoFinger() {
+  const [a, b] = [...ptrs.values()];
+  return {
+    dist: Math.hypot(a.x - b.x, a.y - b.y),
+    cx: (a.x + b.x) / 2,
+    cy: (a.y + b.y) / 2,
+  };
+}
+
 canvas.addEventListener("pointerdown", (e) => {
   canvas.setPointerCapture(e.pointerId);
-  drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 1 || e.button === 2 };
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY,
+                          pan: e.shiftKey || e.button === 1 || e.button === 2 });
+  gesture = ptrs.size === 2 ? twoFinger() : null;
   canvas.classList.add("dragging");
 });
+
 canvas.addEventListener("pointermove", (e) => {
-  if (!drag) return;
-  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  drag.x = e.clientX; drag.y = e.clientY;
-  if (drag.pan) {
-    // Pan in the plane facing the viewer.
-    const s = cam.dist * 0.0022;
-    const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
-    cam.target[0] -= (dx * cy) * s;
-    cam.target[2] += (dx * sy) * s;
-    cam.target[1] += dy * s;
+  const p = ptrs.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+
+  if (ptrs.size >= 2) {
+    const now = twoFinger();
+    if (gesture) {
+      if (gesture.dist > 0 && now.dist > 0) zoomBy(gesture.dist / now.dist);
+      panBy(now.cx - gesture.cx, now.cy - gesture.cy);
+    }
+    gesture = now;
+  } else if (p.pan) {
+    panBy(dx, dy);
   } else {
-    cam.yaw -= dx * 0.006;
-    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch + dy * 0.005));
+    orbitBy(dx, dy);
   }
 });
-const endDrag = () => { drag = null; canvas.classList.remove("dragging"); };
-canvas.addEventListener("pointerup", endDrag);
-canvas.addEventListener("pointercancel", endDrag);
+
+function releasePointer(e) {
+  ptrs.delete(e.pointerId);
+  gesture = ptrs.size === 2 ? twoFinger() : null;
+  if (!ptrs.size) canvas.classList.remove("dragging");
+}
+canvas.addEventListener("pointerup", releasePointer);
+canvas.addEventListener("pointercancel", releasePointer);
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  cam.dist = Math.max(0.15, Math.min(60, cam.dist * Math.exp(e.deltaY * 0.0012)));
+  zoomBy(Math.exp(e.deltaY * 0.0012));
 }, { passive: false });
+
+// Bottom sheet + collapsible HUD, both only visible on narrow screens.
+$("sheetBtn").addEventListener("click", () => {
+  const open = $("ctl").classList.toggle("open");
+  $("sheetBtn").setAttribute("aria-expanded", String(open));
+  $("sheetBtn").textContent = open ? "Close" : "Controls";
+});
+$("hudTitle").addEventListener("click", () => $("hud").classList.toggle("collapsed"));
+if (window.matchMedia("(max-width: 760px)").matches) {
+  $("hud").classList.add("collapsed");
+}
 
 function segGroup(id, attr, cb) {
   const root = $(id);
@@ -920,7 +1008,9 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ------------------------------- websocket ---------------------------------
-const WS_URL = `ws://${location.hostname}:8772`;
+// An https page cannot open a plaintext ws://, so follow the page's own scheme.
+const SECURE = location.protocol === "https:";
+const WS_URL = `${SECURE ? "wss" : "ws"}://${location.hostname}:${SECURE ? 8444 : 8772}`;
 $("splash-ws").innerHTML = `bridge <code>${WS_URL}</code>`;
 // Show the address to type into the phone so it never has to be looked up.
 fetch("/ips").then((r) => r.json()).then((d) => {

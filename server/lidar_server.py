@@ -16,7 +16,10 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import socket
+import ssl
+import struct
 import sys
 import threading
 import time
@@ -26,15 +29,33 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from websockets.asyncio.server import serve
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidMessage
 
 import protocol
+
+
+class _QuietHandshakeNoise(logging.Filter):
+    """Drop the traceback websockets logs when something opens a TCP connection to the
+    WebSocket port and closes it without speaking HTTP -- a port scan, a health check,
+    or a browser probing. It is not a fault, and a stack trace per occurrence buries
+    the errors that are.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        return not isinstance(exc, (InvalidMessage, EOFError))
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 HTTP_PORT = 8770
 PHONE_PORT = 8771
 WS_PORT = 8772
+# The capture page needs a secure origin or iOS refuses it the camera outright, so the
+# same content is served again over TLS on these.
+HTTPS_PORT = 8443
+WSS_PORT = 8444
+
+CA_PATH = None      # set at startup when TLS is available
 
 # Two frames of slack per client. A browser that cannot keep up should show recent
 # data with gaps, never a growing backlog of stale frames.
@@ -164,6 +185,82 @@ def rescale_intrinsics(header: dict, from_w: int, from_h: int, to_w: int, to_h: 
             header[key] = header[key] * s
 
 
+async def ingest(header: dict, depth: bytes, conf: bytes, rgb: bytes, raw_in: int):
+    """Shared tail for every source: supply depth if the sender had none, sanity check
+    it, then fan out. Keeps the native app and the browser capture page on identical
+    handling so the viewer cannot tell them apart."""
+    if not depth and rgb and depth_worker is not None:
+        result = await depth_worker.infer(rgb)
+        if result is None:
+            return                          # GPU still busy; skip rather than lag
+        depth, dw, dh = result
+        rescale_intrinsics(header, header.get("iw", dw), header.get("ih", dh), dw, dh)
+        header["dw"], header["dh"] = dw, dh
+        header["src"] = f"{header.get('src') or 'rgb'}+ml"
+        conf = b""                          # inference has no confidence channel
+
+    if not depth:
+        return
+
+    expect = header.get("dw", 0) * header.get("dh", 0) * 2
+    if len(depth) != expect:
+        print(
+            f"[ingest] depth size mismatch: got {len(depth)} want {expect}"
+            f" for {header.get('dw')}x{header.get('dh')} - dropping frame",
+            flush=True,
+        )
+        return
+
+    hub.note_frame(raw_in)
+    hub.publish(protocol.pack_browser_frame(header, depth, conf, rgb))
+
+
+async def handle_web_phone(ws):
+    """Ingest from web/capture.html. A browser cannot open a raw TCP socket, so the
+    capture page speaks the same frames over this WebSocket instead:
+
+        text   -> {"type":"hello", ...} once
+        binary -> u32 headerLen | headerJSON | jpeg
+    """
+    peer = "web"
+    print(f"[web] capture page connected", flush=True)
+    try:
+        async for msg in ws:
+            if isinstance(msg, str):
+                info = json.loads(msg)
+                if info.get("type") == "hello":
+                    hub.device = info
+                    print(f"[web] hello {json.dumps(info)}", flush=True)
+                continue
+
+            if len(msg) < 4:
+                continue
+            (hlen,) = struct.unpack_from("<I", msg, 0)
+            if hlen > protocol.MAX_HEADER or 4 + hlen > len(msg):
+                print(f"[web] bad header length {hlen}", flush=True)
+                continue
+            header = json.loads(bytes(msg[4:4 + hlen]))
+            rgb = bytes(msg[4 + hlen:])
+            await ingest(header, b"", b"", rgb, len(msg))
+    except ConnectionClosed:
+        pass
+    except (json.JSONDecodeError, struct.error) as e:
+        print(f"[web] malformed frame from {peer}: {e}", flush=True)
+    finally:
+        print("[web] capture page disconnected", flush=True)
+
+
+async def ws_router(ws):
+    """One WebSocket port serves both directions; the path picks which."""
+    path = ""
+    with contextlib.suppress(Exception):
+        path = ws.request.path or ""
+    if path.startswith("/phone"):
+        await handle_web_phone(ws)
+    else:
+        await handle_browser(ws)
+
+
 async def handle_phone(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     peer = writer.get_extra_info("peername")
     addr = f"{peer[0]}:{peer[1]}" if peer else "?"
@@ -176,36 +273,9 @@ async def handle_phone(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         while True:
             header, cdepth, cconf, rgb = await protocol.read_frame(reader)
             raw_in = len(cdepth) + len(cconf) + len(rgb)
-
             depth = protocol.inflate(cdepth) if cdepth else b""
             conf = protocol.inflate(cconf) if cconf else b""
-
-            # No scanner on the phone: infer depth here from the colour frame.
-            if not depth and rgb and depth_worker is not None:
-                result = await depth_worker.infer(rgb)
-                if result is None:
-                    continue                    # GPU still busy; skip rather than lag
-                depth, dw, dh = result
-                rescale_intrinsics(header,
-                                   header.get("iw", dw), header.get("ih", dh), dw, dh)
-                header["dw"], header["dh"] = dw, dh
-                header["src"] = "rgb+ml"
-                conf = b""                      # inference has no confidence channel
-
-            if not depth:
-                continue
-
-            expect = header.get("dw", 0) * header.get("dh", 0) * 2
-            if len(depth) != expect:
-                print(
-                    f"[phone] depth size mismatch: got {len(depth)} want {expect}"
-                    f" for {header.get('dw')}x{header.get('dh')} - dropping frame",
-                    flush=True,
-                )
-                continue
-
-            hub.note_frame(raw_in)
-            hub.publish(protocol.pack_browser_frame(header, depth, conf, rgb))
+            await ingest(header, depth, conf, rgb, raw_in)
     except asyncio.IncompleteReadError:
         print(f"[phone] {addr} disconnected", flush=True)
     except protocol.ProtocolError as e:
@@ -255,14 +325,30 @@ class WebHandler(SimpleHTTPRequestHandler):
         # So the page can tell you which address to type into the phone, instead of
         # you having to go read ipconfig.
         if self.path == "/ips":
-            body = json.dumps({"ips": lan_ips(), "port": PHONE_PORT}).encode()
+            self._json({"ips": lan_ips(), "port": PHONE_PORT,
+                        "httpsPort": HTTPS_PORT, "tls": CA_PATH is not None})
+            return
+        # Installing this on the phone (and trusting it) removes Safari's warning on
+        # the capture page for good.
+        if self.path == "/ca.crt" and CA_PATH and CA_PATH.exists():
+            body = CA_PATH.read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            # This type makes iOS offer to install it as a profile.
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition", 'attachment; filename="lidar-ca.crt"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
         super().do_GET()
+
+    def _json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def handle_one_request(self):
         # A browser closing a keep-alive socket makes ThreadingHTTPServer dump a full
@@ -282,8 +368,10 @@ class WebHandler(SimpleHTTPRequestHandler):
             print(f"[http] {fmt % args}", flush=True)
 
 
-def start_http():
-    srv = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), WebHandler)
+def start_http(port: int, ctx: ssl.SSLContext | None = None):
+    srv = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
+    if ctx is not None:
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -310,6 +398,10 @@ async def main():
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--phone-port", type=int, default=PHONE_PORT)
     ap.add_argument("--ws-port", type=int, default=WS_PORT)
+    ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
+    ap.add_argument("--wss-port", type=int, default=WSS_PORT)
+    ap.add_argument("--no-tls", action="store_true",
+                    help="skip HTTPS; the browser capture page will not work")
     ap.add_argument("--no-depth-model", action="store_true",
                     help="do not load monocular depth; LiDAR phones only")
     ap.add_argument("--depth-input", type=int, default=518,
@@ -341,17 +433,47 @@ async def main():
             print("[depth] phones without a scanner will send colour that "
                   "cannot be turned into depth", flush=True)
 
-    start_http()
-    phone_srv = await asyncio.start_server(handle_phone, "0.0.0.0", args.phone_port)
-    ws_srv = await serve(handle_browser, "0.0.0.0", args.ws_port, max_size=None)
+    logging.getLogger("websockets.server").addFilter(_QuietHandshakeNoise())
 
     ips = lan_ips()
-    print("=" * 62)
-    print("  iPhone LiDAR bridge is up")
-    print(f"  display    http://localhost:{args.http_port}")
-    for ip in ips:
-        print(f"  phone -> {ip}:{args.phone_port}")
-    print("=" * 62, flush=True)
+    lan = [ip for ip in ips if not ip.startswith(("100.", "172.2"))]
+
+    start_http(args.http_port)
+    phone_srv = await asyncio.start_server(handle_phone, "0.0.0.0", args.phone_port)
+    ws_srv = await serve(ws_router, "0.0.0.0", args.ws_port, max_size=None)
+
+    # TLS duplicates the HTTP and WebSocket surfaces. Only the capture page strictly
+    # needs it, but serving both means the desktop viewer keeps working unencrypted on
+    # localhost without a certificate warning.
+    tls_srvs = []
+    global CA_PATH
+    if not args.no_tls:
+        try:
+            import tls as tlsmod
+            cert, key, ca = tlsmod.ensure_cert(ips)
+            CA_PATH = ca
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(cert, key)
+            start_http(args.https_port, ctx)
+            wss = await serve(ws_router, "0.0.0.0", args.wss_port,
+                              ssl=ctx, max_size=None)
+            tls_srvs.append(wss)
+        except Exception as e:
+            print(f"[tls] unavailable ({type(e).__name__}: {e})", flush=True)
+            print("[tls] the phone capture page will not get camera access without "
+                  "HTTPS", flush=True)
+
+    print("=" * 66)
+    print("  iPhone bridge is up")
+    print(f"  viewer (this PC)   http://localhost:{args.http_port}")
+    if CA_PATH:
+        for ip in lan:
+            print(f"  phone capture      https://{ip}:{args.https_port}/capture.html")
+        print(f"  trust cert (opt.)  http://{lan[0] if lan else 'localhost'}"
+              f":{args.http_port}/ca.crt")
+    for ip in lan:
+        print(f"  native app ->      {ip}:{args.phone_port}")
+    print("=" * 66, flush=True)
 
     async with phone_srv, ws_srv:
         await asyncio.gather(phone_srv.serve_forever(), stats_ticker())

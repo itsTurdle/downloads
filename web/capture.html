@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>LiDAR capture</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{
+    --bg:#07080b; --panel:rgba(20,22,29,.9); --line:rgba(255,255,255,.11);
+    --ink:#e8ecf4; --dim:#8b95a8; --accent:#4cc2ff; --good:#5ddc9a; --warn:#ffb454; --bad:#ff6b6b;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);
+    font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    -webkit-text-size-adjust:100%}
+  body{padding:max(14px,env(safe-area-inset-top)) 14px max(14px,env(safe-area-inset-bottom))}
+  .wrap{max-width:520px;margin:0 auto}
+
+  h1{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+    margin:2px 0 14px;font-weight:600}
+
+  .stage{position:relative;aspect-ratio:3/4;width:100%;border-radius:16px;overflow:hidden;
+    background:#0d0f14;border:1px solid var(--line)}
+  video{width:100%;height:100%;object-fit:cover;display:block}
+  .stage.idle video{opacity:0}
+  .badge{position:absolute;top:10px;left:10px;font:11px/1 ui-monospace,monospace;
+    letter-spacing:.08em;text-transform:uppercase;padding:6px 9px;border-radius:99px;
+    background:rgba(0,0,0,.55);backdrop-filter:blur(8px)}
+  .badge.on{color:var(--good)} .badge.off{color:var(--dim)}
+  .badge.err{color:var(--bad)} .badge.warn{color:var(--warn)}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:14px;margin-top:12px}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;
+    font:13px/1.5 ui-monospace,monospace}
+  .row span:first-child{color:var(--dim)}
+  .row span:last-child{font-variant-numeric:tabular-nums}
+
+  label.f{display:block;margin:10px 0 0}
+  label.f .lab{display:flex;justify-content:space-between;color:var(--dim);
+    font-size:12px;margin-bottom:5px}
+  label.f .lab b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+  input[type=text]{width:100%;padding:12px;font:16px ui-monospace,monospace;
+    color:var(--ink);background:rgba(255,255,255,.06);border:1px solid var(--line);
+    border-radius:10px;outline:none}
+  input[type=text]:focus{border-color:var(--accent)}
+  input[type=range]{width:100%;height:4px;-webkit-appearance:none;appearance:none;
+    background:rgba(255,255,255,.16);border-radius:2px;outline:none;margin:8px 0}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;
+    border-radius:50%;background:var(--accent);border:0}
+
+  button{width:100%;padding:16px;margin-top:10px;font:600 16px/1 inherit;
+    color:#04121a;background:var(--accent);border:0;border-radius:12px;cursor:pointer}
+  button.sec{color:var(--ink);background:rgba(255,255,255,.08);
+    border:1px solid var(--line);font-weight:500}
+  button:disabled{opacity:.45}
+
+  .note{color:var(--dim);font-size:12.5px;margin-top:10px;line-height:1.55}
+  .note b{color:var(--warn);font-weight:600}
+  code{color:var(--accent);font-size:12px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LiDAR capture</h1>
+
+  <div class="stage idle" id="stage">
+    <video id="v" playsinline muted autoplay></video>
+    <div class="badge off" id="badge">idle</div>
+  </div>
+
+  <div class="card">
+    <label class="f"><span class="lab">bridge address</span>
+      <input type="text" id="host" inputmode="url" autocapitalize="off"
+             autocorrect="off" spellcheck="false" placeholder="192.168.50.210">
+    </label>
+    <button id="go">Start streaming</button>
+    <button id="stop" class="sec" disabled>Stop</button>
+    <div class="note" id="err"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span>link</span><span id="s-link">—</span></div>
+    <div class="row"><span>camera</span><span id="s-cam">—</span></div>
+    <div class="row"><span>motion</span><span id="s-motion">—</span></div>
+    <div class="row"><span>sending</span><span id="s-fps">—</span></div>
+    <div class="row"><span>uplink</span><span id="s-bw">—</span></div>
+    <div class="row"><span>frames</span><span id="s-n">0</span></div>
+  </div>
+
+  <div class="card">
+    <label class="f"><span class="lab">rate <b id="v-fps">12</b> fps</span>
+      <input type="range" id="fps" min="2" max="30" step="1" value="12"></label>
+    <label class="f"><span class="lab">image width <b id="v-w">640</b> px</span>
+      <input type="range" id="w" min="320" max="1280" step="64" value="640"></label>
+    <label class="f"><span class="lab">jpeg quality <b id="v-q">0.55</b></span>
+      <input type="range" id="q" min="0.2" max="0.9" step="0.05" value="0.55"></label>
+  </div>
+
+  <div class="note">
+    Depth is estimated on the PC's GPU from this camera feed. Safari gives web pages
+    orientation but not position, so the cloud rotates with the phone but cannot be
+    walked around — building a fused scan needs the native app.
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+const st = {
+  ws: null, stream: null, timer: null, running: false,
+  sent: 0, bytes: 0, winStart: 0, inFlight: 0,
+  fps: 12, width: 640, quality: 0.55,
+  // Device orientation in radians; null until the first reading arrives.
+  alpha: null, beta: null, gamma: null,
+};
+
+const video = $("v");
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d", { alpha: false });
+
+function badge(cls, text) {
+  $("badge").className = "badge " + cls;
+  $("badge").textContent = text;
+}
+function fail(msg) {
+  $("err").innerHTML = msg;
+}
+
+// The bridge is on the same origin we were loaded from, so default to that host and
+// remember any override.
+$("host").value = localStorage.getItem("lidar.host") || location.hostname || "";
+
+function slider(id, vid, key, fmt) {
+  const el = $(id);
+  const upd = () => { st[key] = +el.value; $(vid).textContent = fmt(+el.value); };
+  el.addEventListener("input", upd);
+  upd();
+}
+slider("fps", "v-fps", "fps", (v) => v.toFixed(0));
+slider("w", "v-w", "width", (v) => v.toFixed(0));
+slider("q", "v-q", "quality", (v) => v.toFixed(2));
+
+// ---------------------------------------------------------------------------
+// Permissions. Both of these MUST be requested from inside a user gesture on iOS,
+// which is why everything hangs off the Start button rather than running on load.
+// ---------------------------------------------------------------------------
+
+async function askMotion() {
+  const DOE = window.DeviceOrientationEvent;
+  if (!DOE) { $("s-motion").textContent = "unavailable"; return; }
+  try {
+    if (typeof DOE.requestPermission === "function") {
+      const res = await DOE.requestPermission();
+      if (res !== "granted") { $("s-motion").textContent = "denied"; return; }
+    }
+    window.addEventListener("deviceorientation", (e) => {
+      if (e.alpha === null) return;
+      st.alpha = e.alpha * Math.PI / 180;
+      st.beta = e.beta * Math.PI / 180;
+      st.gamma = e.gamma * Math.PI / 180;
+      $("s-motion").textContent = "tracking";
+    }, true);
+    $("s-motion").textContent = "granted";
+  } catch (e) {
+    $("s-motion").textContent = "error";
+  }
+}
+
+async function askCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error(
+      "This browser exposes no camera API. On iOS that almost always means the page "
+      + "is not on a secure origin — the URL must start with <code>https://</code>.");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      facingMode: { ideal: "environment" },   // rear camera
+      width: { ideal: 1280 },
+      height: { ideal: 960 },
+    },
+  });
+  st.stream = stream;
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  const track = stream.getVideoTracks()[0];
+  const s = track.getSettings();
+  $("s-cam").textContent = `${s.width || "?"}x${s.height || "?"}`;
+  return stream;
+}
+
+// ---------------------------------------------------------------------------
+// Pose. Safari gives orientation only, so translation stays at zero and the world
+// origin sits at the camera. Enough to look around, not enough to fuse a scan.
+// ---------------------------------------------------------------------------
+
+function poseMatrix() {
+  if (st.alpha === null) {
+    return [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];   // column-major identity
+  }
+  // Standard device-orientation composition: R = Rz(alpha) Rx(beta) Ry(gamma).
+  const ca = Math.cos(st.alpha), sa = Math.sin(st.alpha);
+  const cb = Math.cos(st.beta), sb = Math.sin(st.beta);
+  const cg = Math.cos(st.gamma), sg = Math.sin(st.gamma);
+
+  const m11 = ca*cg - sa*sb*sg, m12 = -ca*sg - sa*sb*cg, m13 = -sa*cb;
+  const m21 = sa*cg + ca*sb*sg, m22 = -sa*sg + ca*sb*cg, m23 =  ca*cb;
+  const m31 = cb*sg,            m32 =  cb*cg,            m33 = -sb;
+
+  // Column-major, matching the simd_float4x4 layout the bridge expects.
+  return [m11,m21,m31,0, m12,m22,m32,0, m13,m23,m33,0, 0,0,0,1];
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+function connect(host) {
+  return new Promise((resolve, reject) => {
+    // Same scheme as the page: an https page cannot open a plaintext ws://.
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const port = location.protocol === "https:" ? 8444 : 8772;
+    const ws = new WebSocket(`${scheme}://${host}:${port}/phone`);
+    ws.binaryType = "arraybuffer";
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error("timed out connecting to the bridge"));
+    }, 8000);
+    ws.onopen = () => {
+      clearTimeout(timer);
+      ws.send(JSON.stringify({
+        type: "hello",
+        name: "Safari capture",
+        model: navigator.userAgent.includes("iPhone") ? "iPhone (web)" : "browser",
+        src: "web",
+        app: "capture.html",
+      }));
+      resolve(ws);
+    };
+    ws.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("could not reach the bridge"));
+    };
+    ws.onclose = () => { if (st.running) stop("bridge closed the connection"); };
+  });
+}
+
+async function sendFrame() {
+  if (!st.running || !st.ws || st.ws.readyState !== WebSocket.OPEN) return;
+  if (st.inFlight > 1) return;                     // never outrun the link
+  if (!video.videoWidth) return;
+
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const w = Math.min(st.width, vw);
+  const h = Math.round(w * vh / vw);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.drawImage(video, 0, 0, w, h);
+
+  const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", st.quality));
+  if (!blob || !st.running) return;
+  const jpeg = new Uint8Array(await blob.arrayBuffer());
+
+  // Safari exposes no camera intrinsics, so approximate from a typical iPhone rear
+  // field of view (~64 degrees horizontal). The bridge rescales these to whatever
+  // resolution the depth model emits.
+  const hfov = 64 * Math.PI / 180;
+  const fx = (w / 2) / Math.tan(hfov / 2);
+
+  const header = {
+    t: performance.now() / 1000,
+    dw: 0, dh: 0,          // no depth: the bridge infers it
+    iw: w, ih: h,
+    fx: fx, fy: fx, cx: w / 2, cy: h / 2,
+    view: poseMatrix(),
+    src: "web",
+    track: st.alpha === null ? "orientation/none" : "orientation",
+  };
+  const hb = new TextEncoder().encode(JSON.stringify(header));
+  const buf = new Uint8Array(4 + hb.length + jpeg.length);
+  new DataView(buf.buffer).setUint32(0, hb.length, true);
+  buf.set(hb, 4);
+  buf.set(jpeg, 4 + hb.length);
+
+  st.inFlight++;
+  try {
+    st.ws.send(buf);
+    st.sent++;
+    st.bytes += buf.length;
+  } finally {
+    st.inFlight--;
+  }
+
+  const now = performance.now();
+  if (!st.winStart) st.winStart = now;
+  const dt = (now - st.winStart) / 1000;
+  if (dt >= 1) {
+    $("s-fps").textContent = (st.sentWindow / dt).toFixed(1) + " fps";
+    $("s-bw").textContent = (st.bytes / dt / 1024).toFixed(0) + " KiB/s";
+    st.winStart = now; st.bytes = 0; st.sentWindow = 0;
+  }
+  st.sentWindow = (st.sentWindow || 0) + 1;
+  $("s-n").textContent = st.sent;
+}
+
+async function start() {
+  fail("");
+  $("go").disabled = true;
+  badge("warn", "starting");
+  const host = $("host").value.trim();
+  if (!host) { fail("Enter the bridge address."); $("go").disabled = false; return; }
+  localStorage.setItem("lidar.host", host);
+
+  try {
+    // Camera first: it is the one that fails on an insecure origin, and its prompt
+    // should be what the user sees immediately after tapping.
+    await askCamera();
+    await askMotion();
+    st.ws = await connect(host);
+
+    st.running = true;
+    $("stage").classList.remove("idle");
+    $("stop").disabled = false;
+    $("s-link").textContent = "streaming";
+    badge("on", "live");
+    const tick = () => {
+      if (!st.running) return;
+      sendFrame().catch(() => {});
+      st.timer = setTimeout(tick, 1000 / st.fps);
+    };
+    tick();
+  } catch (e) {
+    $("go").disabled = false;
+    badge("err", "failed");
+    $("s-link").textContent = "failed";
+    const msg = String(e && e.message || e);
+    if (/secure|https|no camera API/i.test(msg)) {
+      fail(msg);
+    } else if (/NotAllowedError|denied|Permission/i.test(msg)) {
+      fail("Camera permission was denied. Allow it in Settings → Safari, or "
+           + "reload and tap Start again.");
+    } else if (/NotFoundError|NotReadableError/i.test(msg)) {
+      fail("No usable camera. Close other apps using it and retry.");
+    } else {
+      fail(msg + "<br><b>If the bridge is unreachable:</b> check the address, and that "
+           + "the firewall rule covers this port.");
+    }
+  }
+}
+
+function stop(why) {
+  st.running = false;
+  clearTimeout(st.timer);
+  if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.close();
+  st.ws = null;
+  if (st.stream) { st.stream.getTracks().forEach((t) => t.stop()); st.stream = null; }
+  video.srcObject = null;
+  $("stage").classList.add("idle");
+  $("go").disabled = false;
+  $("stop").disabled = true;
+  $("s-link").textContent = why || "stopped";
+  badge("off", "idle");
+}
+
+$("go").addEventListener("click", start);
+$("stop").addEventListener("click", () => stop());
+document.addEventListener("visibilitychange", () => {
+  // iOS suspends timers and the camera track in the background anyway; make it
+  // explicit rather than silently stalling.
+  if (document.hidden && st.running) stop("backgrounded");
+});
+
+if (location.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(location.hostname)) {
+  fail("<b>This page is not on a secure origin.</b> iOS only grants camera access over "
+       + "HTTPS, and will not even show a prompt otherwise. Reload this page using "
+       + "<code>https://</code> — the bridge serves it on port 8443.");
+}
+</script>
+</body>
+</html>

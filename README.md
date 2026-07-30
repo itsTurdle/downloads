@@ -1,39 +1,73 @@
 # iPhone → PC live 3D
 
-Streams an iPhone's rear camera to this machine over WiFi and renders it as a live
-3D point cloud, fusing frames into a world-space scan you can export as `.ply`.
+Streams an iPhone's rear camera to this machine over WiFi and renders it as a live 3D
+point cloud, fusing frames into a world-space scan you can export as `.ply`.
 
-Two ways in, one display:
+Three ways in, one display. The viewer only ever sees depth + intrinsics + pose, so it
+cannot tell which path produced a frame.
 
 ```
-Pro / Pro Max (has LiDAR)          any other iPhone (no scanner)
-   ARKit sceneDepth                    ARKit world tracking only
-   depth + colour + pose               colour + pose
-        │                                     │
-        │  TCP 8771                           │  TCP 8771
-        ▼                                     ▼
-   lidar_server.py ◄───── Depth Anything V2 on the GPU ◄┘
-        │                 (supplies the missing depth map)
-        │  HTTP 8770 · WS 8772
-        ▼
-   browser: WebGL2 point cloud, fused scan, .ply export
+  Safari, no install          native app,             native app,
+  (capture.html)              no LiDAR                LiDAR (Pro)
+  camera + orientation        camera + 6DoF pose      depth + colour + pose
+        │ WSS 8444                  │ TCP 8771              │ TCP 8771
+        ▼                           ▼                       ▼
+   ┌──────────────────── lidar_server.py ─────────────────────┐
+   │  Depth Anything V2 on the GPU fills in missing depth     │
+   └───────────────────────────┬──────────────────────────────┘
+                   HTTP 8770 / HTTPS 8443 · WS 8772 / WSS 8444
+                               ▼
+        browser: WebGL2 point cloud, fused scan, .ply export
 ```
 
-The viewer only ever sees depth + intrinsics + pose, so it does not care which path
-produced the frame.
+## Quickest path: no app install at all
+
+The native app needs a macOS runner to compile, and GitHub Actions is currently locked
+account-wide over billing — so start with the browser instead.
+
+```bash
+cd server && python lidar_server.py
+```
+
+It prints a `https://<ip>:8443/capture.html` line. Open that **on the phone**, tap
+*Start streaming*, and allow the camera. Then open <http://localhost:8770> on the PC to
+watch the cloud.
+
+Two things about that URL:
+
+- **It must be `https://`.** iOS only grants camera access on a secure origin and will
+  not even show a prompt otherwise. The bridge mints its own certificate for this.
+- **Safari will warn**, because that certificate is signed by a local CA. Either tap
+  *Show Details → visit this website*, or install `http://<ip>:8770/ca.crt` once and
+  enable it under *Settings → General → About → Certificate Trust Settings* for a clean
+  padlock from then on.
+
+Safari gives web pages orientation but **not position**, so the cloud rotates with the
+phone but cannot be walked around — fusing a real scan needs the native app's 6DoF pose.
 
 ## What's here
 
 | Path | |
 |---|---|
-| `server/lidar_server.py` | The bridge. Phone in on 8771, page on 8770, frames out on 8772. |
-| `server/depth_model.py` | Monocular metric depth on the GPU, for phones with no scanner. |
+| `server/lidar_server.py` | The bridge. All ingest and fan-out. |
+| `server/depth_model.py` | Monocular metric depth on the GPU, for anything with no scanner. |
+| `server/tls.py` | Local CA + leaf cert, because iOS needs HTTPS to grant camera. |
 | `server/protocol.py` | Wire format, shared by every Python piece. |
 | `server/synth_phone.py` | Fake phone: raytraces a room. `--rgb-only` emulates a scannerless device. |
 | `server/test_wire_compat.py` | Emulates the Swift client byte-for-byte and checks the round trip. |
-| `web/index.html` | The display. Raw WebGL2, no dependencies, no CDN. |
+| `server/test_web_capture.py` | Drives the browser capture path over WSS and checks the result. |
+| `web/index.html` | The viewer. Raw WebGL2, no dependencies, no CDN. |
+| `web/capture.html` | Phone capture page: camera + orientation over WSS. |
 | `ios/` | The iPhone app (Swift + ARKit) and its XcodeGen spec. |
 | `.github/workflows/build-ipa.yml` | Builds an unsigned IPA on a macOS runner. |
+
+### Ports
+
+| | plain | TLS |
+|---|---|---|
+| pages | 8770 | 8443 |
+| websocket (viewer + web capture) | 8772 | 8444 |
+| native app ingest (raw TCP) | 8771 | — |
 
 ## Run the desktop side
 
@@ -131,6 +165,16 @@ Verified end to end against the synthetic phone:
   `FrameStreamer.swift` does and passes 14/14 checks.
 - **GPU depth path works.** `--rgb-only` produces `src=rgb+ml` at 384×288 / 110 k
   points, and moving pre/post-processing onto the GPU cut latency 32.5 → 15.2 ms.
+- **Browser capture works.** `test_web_capture.py` passes 10/10, including verifying
+  the certificate against the local CA (the same chain the phone checks) and that
+  intrinsics are rescaled from the JPEG grid to the depth grid. The page itself was
+  driven headlessly against a synthetic camera: 61 frames at 10.7 fps, camera acquired
+  at 1280×960, no errors.
+- **Both pages fit a phone.** Checked at a 390×844 viewport with device-metrics
+  emulation: no horizontal overflow, HUD and control sheet do not overlap.
+- **Reachable from another machine.** Verified from the Pi at 192.168.50.13 — ports
+  8770/8771/8772 open, while a deliberately uncovered port with a live listener on it
+  stayed blocked, which is what makes the firewall rule the proven cause.
 
 The Swift itself is **compiled for the first time by CI** — there is no Xcode on
 Windows. Expect to fix a compile error or two on the first run; the workflow prints the
