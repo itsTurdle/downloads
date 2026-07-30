@@ -1008,9 +1008,9 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ------------------------------- websocket ---------------------------------
-// An https page cannot open a plaintext ws://, so follow the page's own scheme.
-const SECURE = location.protocol === "https:";
-const WS_URL = `${SECURE ? "wss" : "ws"}://${location.hostname}:${SECURE ? 8444 : 8772}`;
+// Same origin as the page: the bridge serves pages and the socket on one port, so
+// this works unchanged over http, https, or a tunnel.
+const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/viewer`;
 $("splash-ws").innerHTML = `bridge <code>${WS_URL}</code>`;
 // Show the address to type into the phone so it never has to be looked up.
 fetch("/ips").then((r) => r.json()).then((d) => {

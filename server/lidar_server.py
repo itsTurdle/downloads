@@ -17,19 +17,22 @@ import asyncio
 import contextlib
 import json
 import logging
+import mimetypes
 import socket
 import ssl
 import struct
 import sys
 import threading
 import time
+import urllib.parse
 import zlib
 from concurrent.futures import ThreadPoolExecutor
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from websockets.asyncio.server import serve
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed, InvalidMessage
+from websockets.http11 import Response
 
 import protocol
 
@@ -251,11 +254,11 @@ async def handle_web_phone(ws):
 
 
 async def ws_router(ws):
-    """One WebSocket port serves both directions; the path picks which."""
+    """One port serves both directions; the path picks which."""
     path = ""
     with contextlib.suppress(Exception):
         path = ws.request.path or ""
-    if path.startswith("/phone"):
+    if "phone" in path:
         await handle_web_phone(ws)
     else:
         await handle_browser(ws)
@@ -317,63 +320,67 @@ async def stats_ticker():
                 await ws.send(msg)
 
 
-class WebHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *a, **kw):
-        super().__init__(*a, directory=str(WEB_DIR), **kw)
-
-    def do_GET(self):
-        # So the page can tell you which address to type into the phone, instead of
-        # you having to go read ipconfig.
-        if self.path == "/ips":
-            self._json({"ips": lan_ips(), "port": PHONE_PORT,
-                        "httpsPort": HTTPS_PORT, "tls": CA_PATH is not None})
-            return
-        # Installing this on the phone (and trusting it) removes Safari's warning on
-        # the capture page for good.
-        if self.path == "/ca.crt" and CA_PATH and CA_PATH.exists():
-            body = CA_PATH.read_bytes()
-            self.send_response(200)
-            # This type makes iOS offer to install it as a profile.
-            self.send_header("Content-Type", "application/x-x509-ca-cert")
-            self.send_header("Content-Disposition", 'attachment; filename="lidar-ca.crt"')
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        super().do_GET()
-
-    def _json(self, obj):
-        body = json.dumps(obj).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def handle_one_request(self):
-        # A browser closing a keep-alive socket makes ThreadingHTTPServer dump a full
-        # traceback. Left alone it buries the log in noise that looks like a fault.
-        try:
-            super().handle_one_request()
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
-            self.close_connection = True
-
-    def end_headers(self):
-        # The page is edited constantly during development; caching only confuses.
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
-    def log_message(self, fmt, *args):
-        if "200" not in (args[1] if len(args) > 1 else ""):
-            print(f"[http] {fmt % args}", flush=True)
+def _resp(status: int, reason: str, body: bytes, ctype: str,
+          extra: dict | None = None) -> Response:
+    headers = Headers({
+        "Content-Type": ctype,
+        "Content-Length": str(len(body)),
+        # The pages are edited constantly; caching only confuses.
+        "Cache-Control": "no-store",
+    })
+    for k, v in (extra or {}).items():
+        headers[k] = v
+    return Response(status, reason, headers, body)
 
 
-def start_http(port: int, ctx: ssl.SSLContext | None = None):
-    srv = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
-    if ctx is not None:
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv
+def serve_static(raw_path: str) -> Response:
+    clean = urllib.parse.urlparse(raw_path).path
+    if clean in ("", "/"):
+        clean = "/index.html"
+
+    if clean == "/ips":
+        return _resp(200, "OK", json.dumps({
+            "ips": lan_ips(), "port": PHONE_PORT, "tls": CA_PATH is not None,
+        }).encode(), "application/json")
+
+    # Installing this on the phone AND enabling full trust for it is what makes the
+    # camera work -- iOS refuses media capture on any origin with a certificate error,
+    # even after you tap through Safari's warning.
+    if clean == "/ca.crt":
+        if not (CA_PATH and CA_PATH.exists()):
+            return _resp(404, "Not Found", b"no CA (TLS disabled)\n", "text/plain")
+        return _resp(200, "OK", CA_PATH.read_bytes(),
+                     # This type makes iOS offer it as an installable profile.
+                     "application/x-x509-ca-cert",
+                     {"Content-Disposition": 'attachment; filename="lidar-ca.crt"'})
+
+    root = WEB_DIR.resolve()
+    target = (root / clean.lstrip("/")).resolve()
+    # Keep path traversal inside the web directory.
+    if root not in target.parents and target != root:
+        return _resp(403, "Forbidden", b"forbidden\n", "text/plain")
+    if not target.is_file():
+        return _resp(404, "Not Found", b"not found\n", "text/plain")
+    ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    if ctype.startswith("text/") or ctype == "application/javascript":
+        ctype += "; charset=utf-8"
+    return _resp(200, "OK", target.read_bytes(), ctype)
+
+
+def process_request(connection, request):
+    """Serve pages from the same port that carries the WebSocket.
+
+    A WebSocket handshake is just an HTTP request with `Upgrade: websocket`, so anything
+    without it is a page load and gets answered here. One origin for both matters
+    because a quick tunnel (cloudflared/ngrok) forwards a single port -- and a tunnel is
+    the only way to get a genuinely trusted certificate on a LAN address.
+    """
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        return None
+    try:
+        return serve_static(request.path)
+    except OSError as e:
+        return _resp(500, "Internal Server Error", f"{e}\n".encode(), "text/plain")
 
 
 def lan_ips() -> list[str]:
@@ -438,15 +445,13 @@ async def main():
     ips = lan_ips()
     lan = [ip for ip in ips if not ip.startswith(("100.", "172.2"))]
 
-    start_http(args.http_port)
     phone_srv = await asyncio.start_server(handle_phone, "0.0.0.0", args.phone_port)
-    ws_srv = await serve(ws_router, "0.0.0.0", args.ws_port, max_size=None)
+    # Pages and WebSocket share each port, so a single-port tunnel carries both.
+    plain = await serve(ws_router, "0.0.0.0", args.http_port,
+                        process_request=process_request, max_size=None)
 
-    # TLS duplicates the HTTP and WebSocket surfaces. Only the capture page strictly
-    # needs it, but serving both means the desktop viewer keeps working unencrypted on
-    # localhost without a certificate warning.
-    tls_srvs = []
     global CA_PATH
+    tls_ok = False
     if not args.no_tls:
         try:
             import tls as tlsmod
@@ -454,28 +459,31 @@ async def main():
             CA_PATH = ca
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(cert, key)
-            start_http(args.https_port, ctx)
-            wss = await serve(ws_router, "0.0.0.0", args.wss_port,
-                              ssl=ctx, max_size=None)
-            tls_srvs.append(wss)
+            await serve(ws_router, "0.0.0.0", args.https_port,
+                        process_request=process_request, ssl=ctx, max_size=None)
+            tls_ok = True
         except Exception as e:
             print(f"[tls] unavailable ({type(e).__name__}: {e})", flush=True)
-            print("[tls] the phone capture page will not get camera access without "
-                  "HTTPS", flush=True)
 
-    print("=" * 66)
+    host = lan[0] if lan else "localhost"
+    print("=" * 72)
     print("  iPhone bridge is up")
-    print(f"  viewer (this PC)   http://localhost:{args.http_port}")
-    if CA_PATH:
-        for ip in lan:
-            print(f"  phone capture      https://{ip}:{args.https_port}/capture.html")
-        print(f"  trust cert (opt.)  http://{lan[0] if lan else 'localhost'}"
-              f":{args.http_port}/ca.crt")
-    for ip in lan:
-        print(f"  native app ->      {ip}:{args.phone_port}")
-    print("=" * 66, flush=True)
+    print(f"  viewer (this PC)    http://localhost:{args.http_port}")
+    if tls_ok:
+        print(f"  phone capture       https://{host}:{args.https_port}/capture.html")
+        print(f"  install this first  http://{host}:{args.http_port}/ca.crt")
+        print("                      ...then Settings > General > About >")
+        print("                      Certificate Trust Settings > enable it.")
+        print("                      iOS blocks the camera on an untrusted cert even")
+        print("                      after you tap through Safari's warning.")
+    print()
+    print("  No cert hassle? Expose one port through a tunnel for a real")
+    print("  certificate (note: frames then transit that provider):")
+    print(f"    cloudflared tunnel --url http://localhost:{args.http_port}")
+    print(f"  native app ->       {host}:{args.phone_port}")
+    print("=" * 72, flush=True)
 
-    async with phone_srv, ws_srv:
+    async with phone_srv, plain:
         await asyncio.gather(phone_srv.serve_forever(), stats_ticker())
 
 

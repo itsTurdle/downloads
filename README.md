@@ -33,14 +33,33 @@ It prints a `https://<ip>:8443/capture.html` line. Open that **on the phone**, t
 *Start streaming*, and allow the camera. Then open <http://localhost:8770> on the PC to
 watch the cloud.
 
-Two things about that URL:
+### The certificate is not optional
 
-- **It must be `https://`.** iOS only grants camera access on a secure origin and will
-  not even show a prompt otherwise. The bridge mints its own certificate for this.
-- **Safari will warn**, because that certificate is signed by a local CA. Either tap
-  *Show Details → visit this website*, or install `http://<ip>:8770/ca.crt` once and
-  enable it under *Settings → General → About → Certificate Trust Settings* for a clean
-  padlock from then on.
+iOS grants camera access only on a secure origin, and — the part that trips everyone up
+— **it keeps refusing on an origin whose certificate is untrusted, even after you tap
+through Safari's warning.** In that state `navigator.mediaDevices` is simply absent, so
+you never even see a permission prompt. The capture page detects exactly this and says
+so.
+
+So pick one:
+
+**A. Trust the local CA** (stays on your network)
+
+1. Open `http://<ip>:8770/ca.crt` on the phone → allow the profile download.
+2. *Settings → General → VPN & Device Management* → install it.
+3. *Settings → General → About → **Certificate Trust Settings*** → switch it on.
+
+Step 3 is the one that matters; installing without it leaves the cert untrusted.
+
+**B. Tunnel one port** for a genuinely trusted certificate, no install:
+
+```bash
+cloudflared tunnel --url http://localhost:8770
+```
+
+Open the `https://…trycloudflare.com/capture.html` URL it prints. Pages and the
+WebSocket share a single port precisely so this works. Trade-off: **your camera frames
+transit Cloudflare**, so prefer A if that matters to you.
 
 Safari gives web pages orientation but **not position**, so the cloud rotates with the
 phone but cannot be walked around — fusing a real scan needs the native app's 6DoF pose.

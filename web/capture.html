@@ -72,11 +72,22 @@
     <div class="badge off" id="badge">idle</div>
   </div>
 
+  <div class="card" id="blockCard" hidden>
+    <div style="color:var(--warn);font-weight:600;margin-bottom:6px">
+      iOS will not grant the camera here
+    </div>
+    <div class="note" id="blockWhy"></div>
+    <a id="caLink" href="#"><button class="sec">Install the certificate</button></a>
+    <div class="note">
+      After installing: <b>Settings → General → VPN &amp; Device Management</b> to
+      install the profile, then <b>Settings → General → About → Certificate Trust
+      Settings</b> and switch it on. The second step is the one that actually matters —
+      tapping through Safari's warning is <b>not</b> enough, iOS still blocks capture.
+    </div>
+  </div>
+
   <div class="card">
-    <label class="f"><span class="lab">bridge address</span>
-      <input type="text" id="host" inputmode="url" autocapitalize="off"
-             autocorrect="off" spellcheck="false" placeholder="192.168.50.210">
-    </label>
+    <div class="row"><span>streaming to</span><span id="s-origin">—</span></div>
     <button id="go">Start streaming</button>
     <button id="stop" class="sec" disabled>Stop</button>
     <div class="note" id="err"></div>
@@ -89,6 +100,13 @@
     <div class="row"><span>sending</span><span id="s-fps">—</span></div>
     <div class="row"><span>uplink</span><span id="s-bw">—</span></div>
     <div class="row"><span>frames</span><span id="s-n">0</span></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span>secure context</span><span id="d-secure">—</span></div>
+    <div class="row"><span>mediaDevices</span><span id="d-md">—</span></div>
+    <div class="row"><span>getUserMedia</span><span id="d-gum">—</span></div>
+    <div class="row"><span>last error</span><span id="d-err">—</span></div>
   </div>
 
   <div class="card">
@@ -131,9 +149,41 @@ function fail(msg) {
   $("err").innerHTML = msg;
 }
 
-// The bridge is on the same origin we were loaded from, so default to that host and
-// remember any override.
-$("host").value = localStorage.getItem("lidar.host") || location.hostname || "";
+$("s-origin").textContent = location.host;
+
+// ---------------------------------------------------------------------------
+// Up-front diagnosis. iOS refuses media capture on any origin with a certificate
+// error -- and, crucially, keeps refusing after you tap through Safari's warning. In
+// that state `navigator.mediaDevices` is simply absent, which is indistinguishable
+// from an old browser unless we say so explicitly.
+// ---------------------------------------------------------------------------
+const diag = {
+  secure: window.isSecureContext === true,
+  md: !!(navigator.mediaDevices),
+  gum: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+};
+$("d-secure").textContent = diag.secure ? "yes" : "NO";
+$("d-md").textContent = diag.md ? "present" : "MISSING";
+$("d-gum").textContent = diag.gum ? "present" : "MISSING";
+
+function showBlocked(why) {
+  $("blockWhy").innerHTML = why;
+  $("blockCard").hidden = false;
+  // ca.crt is only served over plain http, so point at that explicitly.
+  $("caLink").href = `http://${location.hostname}:8770/ca.crt`;
+}
+
+if (!diag.secure) {
+  showBlocked(
+    "This page is on an <b>insecure origin</b> (" + location.protocol + "). iOS only "
+    + "grants camera access over https, and will not even show a prompt otherwise.");
+} else if (!diag.gum) {
+  showBlocked(
+    "The page is on https but <b>the camera API is absent</b>, which on iOS means the "
+    + "certificate is not trusted. Tapping through Safari's warning lets you view the "
+    + "page but does <b>not</b> restore camera access — the certificate has to be "
+    + "installed and trusted.");
+}
 
 function slider(id, vid, key, fmt) {
   const el = $(id);
@@ -220,12 +270,12 @@ function poseMatrix() {
 // Streaming
 // ---------------------------------------------------------------------------
 
-function connect(host) {
+function connect() {
   return new Promise((resolve, reject) => {
-    // Same scheme as the page: an https page cannot open a plaintext ws://.
+    // Same origin as the page. The bridge serves both from one port, so this works
+    // over http, https, or a tunnel with no address to configure.
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const port = location.protocol === "https:" ? 8444 : 8772;
-    const ws = new WebSocket(`${scheme}://${host}:${port}/phone`);
+    const ws = new WebSocket(`${scheme}://${location.host}/ws/phone`);
     ws.binaryType = "arraybuffer";
     const timer = setTimeout(() => {
       ws.close();
@@ -311,16 +361,13 @@ async function start() {
   fail("");
   $("go").disabled = true;
   badge("warn", "starting");
-  const host = $("host").value.trim();
-  if (!host) { fail("Enter the bridge address."); $("go").disabled = false; return; }
-  localStorage.setItem("lidar.host", host);
 
   try {
-    // Camera first: it is the one that fails on an insecure origin, and its prompt
+    // Camera first: it is the one that fails on an untrusted origin, and its prompt
     // should be what the user sees immediately after tapping.
     await askCamera();
     await askMotion();
-    st.ws = await connect(host);
+    st.ws = await connect();
 
     st.running = true;
     $("stage").classList.remove("idle");
@@ -337,17 +384,23 @@ async function start() {
     $("go").disabled = false;
     badge("err", "failed");
     $("s-link").textContent = "failed";
+    const name = String(e && e.name || "");
     const msg = String(e && e.message || e);
-    if (/secure|https|no camera API/i.test(msg)) {
-      fail(msg);
-    } else if (/NotAllowedError|denied|Permission/i.test(msg)) {
-      fail("Camera permission was denied. Allow it in Settings → Safari, or "
-           + "reload and tap Start again.");
-    } else if (/NotFoundError|NotReadableError/i.test(msg)) {
-      fail("No usable camera. Close other apps using it and retry.");
+    $("d-err").textContent = (name || "error").slice(0, 28);
+
+    if (!diag.gum || /no camera API/i.test(msg)) {
+      // The banner already explains this case in full.
+      fail("See above — the certificate has to be trusted before iOS will allow this.");
+    } else if (/NotAllowedError|Permission/i.test(name + msg)) {
+      fail("Camera permission was refused. If you tapped Don't Allow, clear it under "
+           + "<b>Settings → Safari → Camera</b> (or Clear History and Website Data), "
+           + "then reload and tap Start. If you were never asked at all, the "
+           + "certificate is not trusted — see above.");
+    } else if (/NotFoundError|NotReadableError|OverconstrainedError/i.test(name)) {
+      fail("No usable camera (" + name + "). Close other apps using it and retry.");
     } else {
-      fail(msg + "<br><b>If the bridge is unreachable:</b> check the address, and that "
-           + "the firewall rule covers this port.");
+      fail(msg + "<br>If the bridge is unreachable, check the firewall rule covers "
+           + "this port.");
     }
   }
 }
@@ -374,10 +427,8 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden && st.running) stop("backgrounded");
 });
 
-if (location.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(location.hostname)) {
-  fail("<b>This page is not on a secure origin.</b> iOS only grants camera access over "
-       + "HTTPS, and will not even show a prompt otherwise. Reload this page using "
-       + "<code>https://</code> — the bridge serves it on port 8443.");
+if (!diag.secure) {
+  fail("Reload this page over <code>https://</code> — the bridge serves it on port 8443.");
 }
 </script>
 </body>

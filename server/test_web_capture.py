@@ -26,8 +26,10 @@ from PIL import Image
 from websockets.asyncio.client import connect
 
 CA = Path(__file__).resolve().parent / "_certs" / "ca.crt"
-PHONE_URL = "wss://127.0.0.1:8444/phone"
-VIEW_URL = "wss://127.0.0.1:8444/"
+# Pages and sockets share one port, so these are the same origin the page is served
+# from -- which is what lets a single-port tunnel carry both.
+PHONE_URL = "wss://127.0.0.1:8443/ws/phone"
+VIEW_URL = "wss://127.0.0.1:8443/ws/viewer"
 
 
 def room_jpeg(w=640, h=480, shift=0.0):
