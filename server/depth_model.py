@@ -121,7 +121,9 @@ class DepthEstimator:
     def infer(self, jpeg: bytes) -> tuple[bytes, int, int]:
         """JPEG -> (uint16 little-endian millimetre depth, width, height)."""
         img = Image.open(io.BytesIO(jpeg)).convert("RGB")
-        return self._run(np.asarray(img))
+        # np.array (not asarray): PIL hands back a read-only buffer, and wrapping that
+        # with torch.from_numpy is documented undefined behaviour.
+        return self._run(np.array(img))
 
     def describe(self) -> str:
         return (f"{self.repo.split('/')[-1]} @ {self.input_height}px in, "
