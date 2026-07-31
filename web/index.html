@@ -127,6 +127,7 @@
   <div class="row"><span>tracking</span><span id="s-track">—</span></div>
   <div class="row"><span>depth</span><span id="s-dims">—</span></div>
   <div class="row"><span>inference</span><span id="s-infer">—</span></div>
+  <div class="row"><span>hands</span><span id="s-hands">—</span></div>
   <div class="row keep"><span>stream</span><span id="s-fps">—</span></div>
   <div class="row"><span>bandwidth</span><span id="s-bw">—</span></div>
   <div class="row"><span>live points</span><span id="s-pts">—</span></div>
@@ -150,6 +151,16 @@
     <button data-m="3">normal</button>
     <button data-m="4">contour</button>
   </div>
+
+  <div class="sect">Hand frame</div>
+  <div class="seg" id="handtoggle">
+    <button data-t="pane" aria-pressed="true">colour filter</button>
+  </div>
+  <label class="sl"><span class="lab">filter strength <b id="v-pa">0.28</b></span>
+    <input type="range" id="pa" min="0.05" max="0.8" step="0.01" value="0.28"></label>
+  <div class="note">Make a rectangle with both hands — thumbs and index fingers out,
+    other fingers curled. Twist to rotate and recolour it, move your hands apart to
+    resize.</div>
 
   <div class="sect">Stationary camera</div>
   <button class="btn pri" id="stat" aria-pressed="false">Assume camera is still</button>
@@ -545,6 +556,54 @@ void main(){
   vColor = aCol * uGain;
 }`;
 
+// The framing-gesture pane. Drawn after the cloud with alpha blending so whatever is
+// behind it is tinted -- a colour filter you hold in your hands rather than a flat
+// overlay. Its corners come from the depth map at the fingertips, so it genuinely
+// sits in the scene and you can orbit around it.
+const PANE_VS = `#version 300 es
+precision highp float;
+in vec2 aUV;
+uniform mat4 uViewProj;
+uniform vec3 uC0, uC1, uC2, uC3;   // world-space corners, in order
+out vec2 vUV;
+void main(){
+  // Bilinear across the quad, so a twisted or non-square frame still fills correctly.
+  vec3 top = mix(uC0, uC1, aUV.x);
+  vec3 bot = mix(uC3, uC2, aUV.x);
+  vec3 p = mix(top, bot, aUV.y);
+  vUV = aUV;
+  gl_Position = uViewProj * vec4(p, 1.0);
+}`;
+
+const PANE_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform float uHue, uAlpha, uTime;
+out vec4 frag;
+
+vec3 hsv(float h, float s, float v){
+  vec3 k = mod(vec3(5.0, 3.0, 1.0) + h * 6.0, 6.0);
+  return v - v * s * clamp(min(k, 4.0 - k), 0.0, 1.0);
+}
+
+void main(){
+  vec2 q = abs(vUV - 0.5) * 2.0;
+  float edge = max(q.x, q.y);
+
+  // Gradient across the pane, drifting slowly so it never looks like a static decal.
+  float g = vUV.x * 0.5 + vUV.y * 0.3 + uTime * 0.05;
+  vec3 col = hsv(fract(uHue + g * 0.18), 0.75, 1.0);
+
+  // Bright rim, soft glass in the middle.
+  float border = smoothstep(0.86, 1.0, edge);
+  float inner = 1.0 - smoothstep(0.0, 0.95, edge) * 0.35;
+  vec3 rim = hsv(fract(uHue + 0.5), 0.35, 1.0);
+
+  vec3 outc = mix(col * inner, rim, border);
+  float a = mix(uAlpha, min(uAlpha * 3.5 + 0.35, 0.95), border);
+  frag = vec4(outc * a, a);          // premultiplied
+}`;
+
 const LINE_VS = `#version 300 es
 precision highp float;
 in vec3 aPos;
@@ -563,8 +622,24 @@ const progCloud = program(CLOUD_VS, CLOUD_FS);
 const progMesh  = program(MESH_VS,  MESH_FS);
 const progScan  = program(SCAN_VS,  CLOUD_FS);
 const progLine  = program(LINE_VS,  LINE_FS);
+const progPane  = program(PANE_VS,  PANE_FS);
 const uCloud = uniforms(progCloud), uMesh = uniforms(progMesh);
 const uScan = uniforms(progScan), uLine = uniforms(progLine);
+const uPane = uniforms(progPane);
+
+// Unit quad for the pane; the corners come in as uniforms.
+const vaoPane = gl.createVertexArray();
+{
+  gl.bindVertexArray(vaoPane);
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([0,0, 1,0, 1,1,  0,0, 1,1, 0,1]), gl.STATIC_DRAW);
+  const l = gl.getAttribLocation(progPane, "aUV");
+  gl.enableVertexAttribArray(l);
+  gl.vertexAttribPointer(l, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+}
 
 // ------------------------------- state -------------------------------------
 const st = {
@@ -578,6 +653,8 @@ const st = {
   style: "surface",       // surface | wire | points
   edgeTol: 0.06,          // depth step, relative to distance, that counts as an edge
   contour: 8,             // contour bands per metre
+  pane: true,             // hand-framing colour filter
+  paneAlpha: 0.28,
   maskMotion: false,      // conf byte carries a motion mask rather than confidence
   motionOnly: false,      // draw only what moved against the static background
   stationary: false,
@@ -731,6 +808,67 @@ function seg(a, b, c) {
   lines.n += 2;
 }
 const path = [];   // phone camera positions, for the path overlay
+
+// ------------------------------- hand pane ---------------------------------
+const pane = { corners: null, target: null, hue: 0.55, seen: 0, lastAt: 0 };
+
+/** Median depth of a small patch, so a single hole at a fingertip does not throw the
+ *  corner to infinity. */
+function sampleDepthAt(nx, ny) {
+  if (!st.depth) return 0;
+  const px = Math.round(nx * st.dw), py = Math.round(ny * st.dh);
+  const vals = [];
+  for (let dy = -3; dy <= 3; dy++) {
+    for (let dx = -3; dx <= 3; dx++) {
+      const x = px + dx, y = py + dy;
+      if (x < 0 || y < 0 || x >= st.dw || y >= st.dh) continue;
+      const d = st.depth[y * st.dw + x] * st.depthScale;
+      if (d > 0.05) vals.push(d);
+    }
+  }
+  if (!vals.length) return 0;
+  vals.sort((a, b) => a - b);
+  return vals[vals.length >> 1];
+}
+
+function unprojectNorm(nx, ny, d) {
+  const fx = st.intr[0], fy = st.intr[1], cx = st.intr[2], cy = st.intr[3];
+  const px = nx * st.dw, py = ny * st.dh;
+  return M4.xform(st.camToWorld, [
+    (px + 0.5 - cx) / fx * d,
+    -(py + 0.5 - cy) / fy * d,
+    -d,
+  ]);
+}
+
+function updatePane(frame) {
+  if (!frame || !st.havePixels) return;
+  const corners = frame.corners;
+  // One depth for all four corners: fingertip depth is the noisiest place to sample,
+  // and per-corner values make the pane flap. The median keeps it planar and steady
+  // while still sitting at the hands' actual distance.
+  const ds = corners.map((c) => sampleDepthAt(c[0], c[1])).filter((d) => d > 0);
+  if (!ds.length) return;
+  ds.sort((a, b) => a - b);
+  const d = ds[ds.length >> 1];
+
+  const world = corners.map((c) => unprojectNorm(c[0], c[1], d));
+  if (!pane.target) {
+    pane.target = world;
+  } else {
+    // Smooth in world space; landmark jitter is far more visible once unprojected.
+    for (let i = 0; i < 4; i++) {
+      for (let k = 0; k < 3; k++) {
+        pane.target[i][k] += 0.45 * (world[i][k] - pane.target[i][k]);
+      }
+    }
+  }
+  pane.corners = pane.target;
+  pane.lastAt = performance.now();
+  pane.seen++;
+  // Hue follows the twist, so rotating your hands recolours the filter.
+  pane.hue = (frame.angle / (Math.PI * 2) + 1) % 1;
+}
 
 function buildLines() {
   lineReset();
@@ -909,6 +1047,13 @@ function onFrame(buf) {
   // In stationary mode the confidence byte carries a motion magnitude instead, so the
   // confidence threshold must not be applied to it.
   st.maskMotion = header.mask === "motion";
+  if (st.pane) updatePane(header.frame);
+  if (!header.frame && performance.now() - pane.lastAt > 400) {
+    pane.corners = null;          // gesture released; drop it rather than freeze
+    pane.target = null;
+  }
+  $("s-hands").textContent = header.frame
+    ? "framing" : (header.hands ? `${header.hands.length} tracked` : "—");
   maybeAppendScan();
 }
 
@@ -1024,6 +1169,29 @@ function draw() {
     gl.uniform1f(uCloud.uDepthScale, st.depthScale);
     gl.bindVertexArray(vaoCloud);
     gl.drawArrays(gl.POINTS, 0, cloudCount);
+  }
+  // The pane goes last so it tints everything already drawn. Depth test stays on so
+  // it can be occluded by nearer geometry, but depth writes are off -- it is glass,
+  // not an object.
+  if (st.pane && pane.corners) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // premultiplied
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.useProgram(progPane);
+    gl.uniformMatrix4fv(uPane.uViewProj, false, viewProj);
+    const c = pane.corners;
+    gl.uniform3fv(uPane.uC0, c[0]);
+    gl.uniform3fv(uPane.uC1, c[1]);
+    gl.uniform3fv(uPane.uC2, c[2]);
+    gl.uniform3fv(uPane.uC3, c[3]);
+    gl.uniform1f(uPane.uHue, pane.hue);
+    gl.uniform1f(uPane.uAlpha, st.paneAlpha);
+    gl.uniform1f(uPane.uTime, t0 * 0.001);
+    gl.bindVertexArray(vaoPane);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
   }
   gl.bindVertexArray(null);
 
@@ -1164,6 +1332,13 @@ $("stat").addEventListener("click", () => {
                                         : "Assume camera is still";
   pushSettings({ stationary: st.stationary });
 });
+$("handtoggle").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  st.pane = !st.pane;
+  b.setAttribute("aria-pressed", String(st.pane));
+  if (!st.pane) { pane.corners = null; pane.target = null; }
+});
 $("statmodes").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
@@ -1189,6 +1364,7 @@ slider("far",  "v-far",  "far",  (v) => v.toFixed(1));
 slider("size", "v-size", "sizeScale", (v) => v.toFixed(1));
 slider("gain", "v-gain", "gain", (v) => v.toFixed(2));
 slider("dscale", "v-scale", "depthScale", (v) => v.toFixed(2));
+slider("pa", "v-pa", "paneAlpha", (v) => v.toFixed(2));
 slider("edge", "v-edge", "edgeTol", (v) => v.toFixed(2));
 slider("cont", "v-cont", "contour", (v) => v.toFixed(0));
 {

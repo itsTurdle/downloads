@@ -12,3 +12,4 @@ ios/LidarStream/Info.plist
 *.ply
 .DS_Store
 _certs/
+_models/

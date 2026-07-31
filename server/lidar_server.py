@@ -130,6 +130,8 @@ class Hub:
         }
         if depth_worker is not None:
             s["depth"] = depth_worker.stats()
+        if hand_worker is not None:
+            s["hands"] = hand_worker.stats()
         return s
 
 
@@ -177,6 +179,61 @@ class DepthWorker:
 depth_worker: DepthWorker | None = None
 
 
+class HandWorker:
+    """Hand tracking on its own thread, so it overlaps the GPU depth pass.
+
+    Hand landmarks run on the CPU (~17 ms) while depth runs on the GPU (~19 ms); in
+    one thread they would add up and halve the frame rate. Results are cached and
+    attached to whichever frame is current, so a detection may lag by one frame --
+    invisible for a visual effect, and far better than stalling the stream.
+    """
+
+    def __init__(self, tracker):
+        self.tracker = tracker
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hands")
+        self.lock = threading.Lock()
+        self.busy = False
+        self.latest: dict = {}
+        self.last_ms = 0.0
+        self.detected = 0
+        self.frames = 0
+
+    def submit(self, jpeg: bytes):
+        with self.lock:
+            if self.busy:
+                return
+            self.busy = True
+        asyncio.get_running_loop().run_in_executor(self.pool, self._run, jpeg)
+
+    def _run(self, jpeg: bytes):
+        import io
+
+        import numpy as np
+        from PIL import Image
+        try:
+            t0 = time.perf_counter()
+            rgb = np.array(Image.open(io.BytesIO(jpeg)).convert("RGB"))
+            res = self.tracker.detect(rgb)
+            self.last_ms = (time.perf_counter() - t0) * 1000.0
+            self.frames += 1
+            if res.get("frame"):
+                self.detected += 1
+            self.latest = res
+        except Exception as e:
+            print(f"[hands] {type(e).__name__}: {e}", flush=True)
+            self.latest = {}
+        finally:
+            with self.lock:
+                self.busy = False
+
+    def stats(self) -> dict:
+        return {"ms": round(self.last_ms, 1), "frames": self.frames,
+                "framed": self.detected}
+
+
+hand_worker: HandWorker | None = None
+
+
 def rescale_intrinsics(header: dict, from_w: int, from_h: int, to_w: int, to_h: int):
     """Move fx/fy/cx/cy from one image grid to another, in place.
 
@@ -197,6 +254,11 @@ async def ingest(header: dict, depth: bytes, conf: bytes, rgb: bytes, raw_in: in
     """Shared tail for every source: supply depth if the sender had none, sanity check
     it, then fan out. Keeps the native app and the browser capture page on identical
     handling so the viewer cannot tell them apart."""
+    # Kick hand tracking off first so it runs alongside the depth pass rather than
+    # after it; whatever it last produced is attached below.
+    if rgb and hand_worker is not None:
+        hand_worker.submit(rgb)
+
     if not depth and rgb and depth_worker is not None:
         result = await depth_worker.infer(rgb)
         if result is None:
@@ -222,6 +284,13 @@ async def ingest(header: dict, depth: bytes, conf: bytes, rgb: bytes, raw_in: in
             flush=True,
         )
         return
+
+    if hand_worker is not None and hand_worker.latest:
+        h = hand_worker.latest
+        if h.get("hands"):
+            header["hands"] = h["hands"]
+        if h.get("frame"):
+            header["frame"] = h["frame"]
 
     hub.note_frame(raw_in)
     hub.publish(protocol.pack_browser_frame(header, depth, conf, rgb))
@@ -468,6 +537,8 @@ async def main():
     ap.add_argument("--wss-port", type=int, default=WSS_PORT)
     ap.add_argument("--no-tls", action="store_true",
                     help="skip HTTPS; the browser capture page will not work")
+    ap.add_argument("--no-hands", action="store_true",
+                    help="skip hand tracking (saves a CPU core)")
     ap.add_argument("--no-depth-model", action="store_true",
                     help="do not load monocular depth; LiDAR phones only")
     ap.add_argument("--depth-input", type=int, default=518,
@@ -481,7 +552,15 @@ async def main():
     if not WEB_DIR.is_dir():
         sys.exit(f"web directory missing: {WEB_DIR}")
 
-    global depth_worker
+    global depth_worker, hand_worker
+    if not args.no_hands:
+        try:
+            import hands as hands_mod
+            hand_worker = HandWorker(hands_mod.HandTracker())
+            print("[hands] MediaPipe hand landmarker ready", flush=True)
+        except Exception as e:
+            print(f"[hands] unavailable ({type(e).__name__}: {e})", flush=True)
+
     if not args.no_depth_model:
         try:
             import depth_model
