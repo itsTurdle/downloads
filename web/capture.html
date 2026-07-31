@@ -169,8 +169,9 @@ $("d-gum").textContent = diag.gum ? "present" : "MISSING";
 function showBlocked(why) {
   $("blockWhy").innerHTML = why;
   $("blockCard").hidden = false;
-  // ca.crt is only served over plain http, so point at that explicitly.
-  $("caLink").href = `http://${location.hostname}:8770/ca.crt`;
+  // Relative, so it works whichever port served this page. Hardcoding one breaks the
+  // moment the bridge has to fall back to a different port.
+  $("caLink").href = "/ca.crt";
 }
 
 if (!diag.secure) {
@@ -428,7 +429,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 if (!diag.secure) {
-  fail("Reload this page over <code>https://</code> — the bridge serves it on port 8443.");
+  fail("Reload this page over <code>https://</code> — the bridge prints the address "
+       + "on startup.");
 }
 </script>
 </body>

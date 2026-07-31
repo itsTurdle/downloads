@@ -578,7 +578,7 @@ void main(){
 const PANE_FS = `#version 300 es
 precision highp float;
 in vec2 vUV;
-uniform float uHue, uAlpha, uTime;
+uniform float uHue, uAlpha, uTime, uPass;
 out vec4 frag;
 
 vec3 hsv(float h, float s, float v){
@@ -592,16 +592,23 @@ void main(){
 
   // Gradient across the pane, drifting slowly so it never looks like a static decal.
   float g = vUV.x * 0.5 + vUV.y * 0.3 + uTime * 0.05;
-  vec3 col = hsv(fract(uHue + g * 0.18), 0.75, 1.0);
+  vec3 col = hsv(fract(uHue + g * 0.18), 0.85, 1.0);
+  float border = smoothstep(0.88, 1.0, edge);
 
-  // Bright rim, soft glass in the middle.
-  float border = smoothstep(0.86, 1.0, edge);
-  float inner = 1.0 - smoothstep(0.0, 0.95, edge) * 0.35;
-  vec3 rim = hsv(fract(uHue + 0.5), 0.35, 1.0);
-
-  vec3 outc = mix(col * inner, rim, border);
-  float a = mix(uAlpha, min(uAlpha * 3.5 + 0.35, 0.95), border);
-  frag = vec4(outc * a, a);          // premultiplied
+  if (uPass < 0.5) {
+    // Tint pass, multiplied onto the scene. Coloured glass absorbs the wavelengths
+    // it is not; straight alpha blending instead ADDS light and washes everything
+    // toward white, which reads as a decal stuck on the screen rather than a filter
+    // you are looking through.
+    vec3 tint = mix(vec3(1.0), col, uAlpha);
+    tint *= 1.0 - border * 0.35;         // edges drink a little more light
+    frag = vec4(tint, 1.0);
+  } else {
+    // Glow pass, added on top: a bright rim and a faint sheen across the glass.
+    float sheen = 0.05 * (1.0 - edge);
+    vec3 rim = hsv(fract(uHue + 0.5), 0.45, 1.0);
+    frag = vec4(rim * border * 0.85 + col * sheen, 1.0);
+  }
 }`;
 
 const LINE_VS = `#version 300 es
@@ -1175,8 +1182,7 @@ function draw() {
   // not an object.
   if (st.pane && pane.corners) {
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // premultiplied
-    gl.depthMask(false);
+    gl.depthMask(false);              // glass, not an occluder
     gl.disable(gl.CULL_FACE);
     gl.useProgram(progPane);
     gl.uniformMatrix4fv(uPane.uViewProj, false, viewProj);
@@ -1189,7 +1195,17 @@ function draw() {
     gl.uniform1f(uPane.uAlpha, st.paneAlpha);
     gl.uniform1f(uPane.uTime, t0 * 0.001);
     gl.bindVertexArray(vaoPane);
+
+    // Tint first (multiply), then the rim glow (add). Two passes because no single
+    // blend both absorbs colour like glass and emits light like a glowing edge.
+    gl.blendFunc(gl.DST_COLOR, gl.ZERO);
+    gl.uniform1f(uPane.uPass, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.uniform1f(uPane.uPass, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
     gl.depthMask(true);
     gl.disable(gl.BLEND);
   }

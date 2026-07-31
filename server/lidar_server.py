@@ -4,12 +4,12 @@
 
 Ports:
 
-    8770   pages + WebSocket, plaintext
+    7770   pages + WebSocket, plaintext
     8443   the same, over TLS -- iOS grants the camera only on a secure origin
-    8771   raw TCP, frames in from the native iOS app
+    7771   raw TCP, frames in from the native iOS app
 
 Pages and the WebSocket deliberately share a port: a quick tunnel
-(`cloudflared tunnel --url http://localhost:8770`) forwards exactly one, and a tunnel
+(`cloudflared tunnel --url http://localhost:7770`) forwards exactly one, and a tunnel
 is the only way to get a genuinely trusted certificate for a LAN address.
 
 Depth from the native app arrives raw-DEFLATE and leaves raw; inflating here costs
@@ -55,13 +55,17 @@ class _QuietHandshakeNoise(logging.Filter):
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-HTTP_PORT = 8770
-PHONE_PORT = 8771
-WS_PORT = 8772
+# Deliberately below 8500. Windows hands Hyper-V/WinNAT dynamic port exclusions that
+# currently cover 8507-9006, and binding inside one fails with WSAEACCES even though
+# nothing is listening. Those ranges move on reboot, which is why 8770/8771 worked one
+# hour and not the next -- see bind_port() for the fallback that survives it anyway.
+#
+#   netsh interface ipv4 show excludedportrange protocol=tcp
+HTTP_PORT = 7770
+PHONE_PORT = 7771
 # The capture page needs a secure origin or iOS refuses it the camera outright, so the
-# same content is served again over TLS on these.
+# same content is served again over TLS here.
 HTTPS_PORT = 8443
-WSS_PORT = 8444
 
 CA_PATH = None      # set at startup when TLS is available
 
@@ -528,17 +532,40 @@ def lan_ips() -> list[str]:
     return sorted(ips)
 
 
+async def bind_port(opener, port: int, label: str, tries: int = 12):
+    """Open a listener, stepping to the next port if the OS refuses this one.
+
+    On Windows a port inside a Hyper-V reserved range fails to bind with a permission
+    error even though nothing is listening, and those ranges change on reboot. Rather
+    than die -- or worse, appear to work while the phone silently cannot connect --
+    take the next port and say so loudly.
+    """
+    for i in range(tries):
+        p = port + i
+        try:
+            srv = await opener(p)
+            if i:
+                print(f"[port] {label}: {port} refused by the OS, using {p} instead",
+                      flush=True)
+            return srv, p
+        except (PermissionError, OSError) as e:
+            if i == tries - 1:
+                raise
+            print(f"[port] {label}: {p} unavailable ({e.__class__.__name__}), "
+                  f"trying {p + 1}", flush=True)
+    raise RuntimeError("unreachable")
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--phone-port", type=int, default=PHONE_PORT)
-    ap.add_argument("--ws-port", type=int, default=WS_PORT)
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
-    ap.add_argument("--wss-port", type=int, default=WSS_PORT)
     ap.add_argument("--no-tls", action="store_true",
                     help="skip HTTPS; the browser capture page will not work")
-    ap.add_argument("--no-hands", action="store_true",
-                    help="skip hand tracking (saves a CPU core)")
+    ap.add_argument("--hands", action="store_true",
+                    help="hand tracking here too (normally handled by the separate "
+                         "handspace app, which is not capped by the depth pipeline)")
     ap.add_argument("--no-depth-model", action="store_true",
                     help="do not load monocular depth; LiDAR phones only")
     ap.add_argument("--depth-input", type=int, default=518,
@@ -553,7 +580,7 @@ async def main():
         sys.exit(f"web directory missing: {WEB_DIR}")
 
     global depth_worker, hand_worker
-    if not args.no_hands:
+    if args.hands:
         try:
             import hands as hands_mod
             hand_worker = HandWorker(hands_mod.HandTracker())
@@ -583,10 +610,14 @@ async def main():
     ips = lan_ips()
     lan = [ip for ip in ips if not ip.startswith(("100.", "172.2"))]
 
-    phone_srv = await asyncio.start_server(handle_phone, "0.0.0.0", args.phone_port)
+    phone_srv, phone_port = await bind_port(
+        lambda p: asyncio.start_server(handle_phone, "0.0.0.0", p),
+        args.phone_port, "native app")
     # Pages and WebSocket share each port, so a single-port tunnel carries both.
-    plain = await serve(ws_router, "0.0.0.0", args.http_port,
-                        process_request=process_request, max_size=None)
+    plain, http_port = await bind_port(
+        lambda p: serve(ws_router, "0.0.0.0", p,
+                        process_request=process_request, max_size=None),
+        args.http_port, "pages")
 
     global CA_PATH
     tls_ok = False
@@ -597,8 +628,11 @@ async def main():
             CA_PATH = ca
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(cert, key)
-            await serve(ws_router, "0.0.0.0", args.https_port,
-                        process_request=process_request, ssl=ctx, max_size=None)
+            _, https_port = await bind_port(
+                lambda p: serve(ws_router, "0.0.0.0", p,
+                                process_request=process_request, ssl=ctx,
+                                max_size=None),
+                args.https_port, "phone capture (TLS)")
             tls_ok = True
         except Exception as e:
             print(f"[tls] unavailable ({type(e).__name__}: {e})", flush=True)
@@ -606,10 +640,10 @@ async def main():
     host = lan[0] if lan else "localhost"
     print("=" * 72)
     print("  iPhone bridge is up")
-    print(f"  viewer (this PC)    http://localhost:{args.http_port}")
+    print(f"  viewer (this PC)    http://localhost:{http_port}")
     if tls_ok:
-        print(f"  phone capture       https://{host}:{args.https_port}/capture.html")
-        print(f"  install this first  http://{host}:{args.http_port}/ca.crt")
+        print(f"  phone capture       https://{host}:{https_port}/capture.html")
+        print(f"  install this first  http://{host}:{http_port}/ca.crt")
         print("                      ...then Settings > General > About >")
         print("                      Certificate Trust Settings > enable it.")
         print("                      iOS blocks the camera on an untrusted cert even")
@@ -617,8 +651,8 @@ async def main():
     print()
     print("  No cert hassle? Expose one port through a tunnel for a real")
     print("  certificate (note: frames then transit that provider):")
-    print(f"    cloudflared tunnel --url http://localhost:{args.http_port}")
-    print(f"  native app ->       {host}:{args.phone_port}")
+    print(f"    cloudflared tunnel --url http://localhost:{http_port}")
+    print(f"  native app ->       {host}:{phone_port}")
     print("=" * 72, flush=True)
 
     async with phone_srv, plain:
