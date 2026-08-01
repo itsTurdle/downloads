@@ -6,7 +6,7 @@ struct ContentView: View {
     @StateObject private var net = FrameStreamer()
 
     @AppStorage("lidar.host") private var host = ""
-    @AppStorage("lidar.port") private var portText = "8771"
+    @AppStorage("lidar.port") private var portText = "7771"
 
     var body: some View {
         NavigationStack {
@@ -94,7 +94,7 @@ struct ContentView: View {
                         .keyboardType(.numbersAndPunctuation)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    TextField("8771", text: $portText)
+                    TextField("7771", text: $portText)
                         .textFieldStyle(.roundedBorder)
                         .keyboardType(.numberPad)
                         .frame(width: 78)
@@ -104,7 +104,7 @@ struct ContentView: View {
 
                 HStack(spacing: 10) {
                     Button {
-                        let port = UInt16(portText) ?? 8771
+                        let port = UInt16(portText) ?? 7771
                         net.connect(host: host.trimmingCharacters(in: .whitespaces),
                                     port: port,
                                     deviceName: UIDevice.current.name)
