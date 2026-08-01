@@ -10,7 +10,7 @@ cannot tell which path produced a frame.
   Safari, no install          native app,             native app,
   (capture.html)              no LiDAR                LiDAR (Pro)
   camera + orientation        camera + 6DoF pose      depth + colour + pose
-        │ WSS 8444                  │ TCP 8771              │ TCP 8771
+        │ WSS 8443                  │ TCP 7771              │ TCP 7771
         ▼                           ▼                       ▼
    ┌──────────────────── lidar_server.py ─────────────────────┐
    │  Depth Anything V2 on the GPU fills in missing depth     │
@@ -84,9 +84,8 @@ phone but cannot be walked around — fusing a real scan needs the native app's 
 
 | | plain | TLS |
 |---|---|---|
-| pages | 8770 | 8443 |
-| websocket (viewer + web capture) | 8772 | 8444 |
-| native app ingest (raw TCP) | 8771 | — |
+| pages + websocket | 7770 | 8443 |
+| native app ingest (raw TCP) | 7771 | — |
 
 ## Run the desktop side
 
