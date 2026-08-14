@@ -36,7 +36,12 @@ body{background:var(--bg);color:var(--ink);
   text-transform:uppercase;letter-spacing:.14em}
 header{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:0 2px}
 header h1{font-size:15px;font-weight:700;letter-spacing:.14em;color:var(--accent)}
-header .hint{font-size:10px;color:var(--muted);letter-spacing:.08em}
+.tfrow{display:flex;gap:4px}
+.tfbtn{background:var(--card);border:1px solid var(--border);color:var(--ink2);border-radius:6px;
+  padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.06em;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.tfbtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.tfbtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .chip{background:var(--card);border:1px solid var(--border);border-radius:6px;
   padding:5px 9px;text-align:center;min-width:52px}
 .chip .k{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
@@ -109,7 +114,10 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 <div class="wrap">
   <header>
     <h1 class="disp">The Tape Room</h1>
-    <span class="hint">EUR/USD &middot; date hidden</span>
+    <div class="tfrow" role="radiogroup" aria-label="Bar timeframe">
+      <button class="tfbtn" data-tf="1d">1D</button>
+      <button class="tfbtn" data-tf="1h">1H</button>
+    </div>
   </header>
 
   <div class="card">
@@ -121,7 +129,7 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
       <span><span class="sw" style="background:var(--price)"></span>the price</span>
       <span><span class="sw" style="background:var(--s20)"></span>20-day avg</span>
       <span><span class="sw" style="background:var(--s100)"></span>100-day avg</span>
-      <span><span class="sw" style="background:var(--mir)"></span>US dollar, flipped</span>
+      <span id="legMir"><span class="sw" style="background:var(--mir)"></span>US dollar, flipped</span>
     </div>
     <details>
       <summary>what am I looking at?</summary>
@@ -141,8 +149,8 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
   </div>
 
   <div class="ctx mono">
-    <div class="chip"><div class="k">last 5 days</div><div class="v" id="x5"></div></div>
-    <div class="chip"><div class="k">last 20 days</div><div class="v" id="x20"></div></div>
+    <div class="chip"><div class="k" id="k5">last 5 days</div><div class="v" id="x5"></div></div>
+    <div class="chip"><div class="k" id="k20">last 20 days</div><div class="v" id="x20"></div></div>
     <div class="chip"><div class="k">how wild</div><div class="v" id="xVol"></div></div>
   </div>
 
@@ -186,9 +194,9 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
     <details>
       <summary>how to play &amp; data sources</summary>
       <div class="guide">
-        <p>Each round drops you at a hidden date between Feb 2007 and Aug 2026. <b>WAIT</b> walks the tape one session while you stay flat &mdash; wait as long as you like. <b>LONG / SHORT</b> enters at the current session; ride with NEXT SESSION and book with EXIT whenever you choose (a round caps at 120 sessions and auto-books). <b>Pass</b> ends the round without a trade. Dates unseal only when the round ends.</p>
+        <p>Each round drops you at a hidden date in the past. <b>1D</b> plays daily bars (2007&ndash;2026, with the dollar-mirror pane); <b>1H</b> plays hourly bars. <b>WAIT</b> walks the tape one bar while you stay flat &mdash; wait as long as you like. <b>LONG / SHORT</b> enters at the current bar; ride with NEXT SESSION and book with EXIT whenever you choose &mdash; there is no time limit, a position only auto-books if the data itself ends. <b>Pass</b> ends the round without a trade. Dates unseal only when the round ends.</p>
         <p>The <b>coin-flip zone</b> is the 95% range a pure guesser's hit rate lands in after the same number of trades. Every round logs its date, your action, sessions waited and held, the result in pips, and the context you saw &mdash; export the CSV and study your own tape.</p>
-        <p>Prices: ECB daily EUR/USD fixes. Dollar mirror: UUP. Yields: US 10-year constant maturity.</p>
+        <p>Prices: ECB daily EUR/USD fixes (1D); HistData.com minute data resampled to hourly (1H). Dollar mirror: UUP. Yields: US 10-year constant maturity.</p>
       </div>
     </details>
   </footer>
@@ -215,8 +223,8 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 <script>
 "use strict";
 const PACK = __PACK__;
-const N = PACK.e.length, W = 120, RIDE_MAX = 120;
-const E = PACK.e;
+const W = 120;
+let TF = "1d", E, N, S20, S100, RET, URET, MIR, ANN, LO, HI, UNIT = "d";
 
 function smaArr(a, n){
   const out = new Array(a.length).fill(null); let s = 0;
@@ -226,15 +234,32 @@ function smaArr(a, n){
   }
   return out;
 }
-const S20 = smaArr(E, 20), S100 = smaArr(E, 100);
-const RET = new Array(N).fill(null);
-for (let i = 1; i < N; i++) RET[i] = E[i]/E[i-1]-1;
-const URET = new Array(N).fill(null);
-for (let i = 1; i < N; i++) if (PACK.u[i] != null && PACK.u[i-1] != null) URET[i] = PACK.u[i]/PACK.u[i-1]-1;
-const FIRSTU = PACK.u.findIndex(v => v != null);
-const LO = Math.max(200, FIRSTU + 130), HI = N - 21;
+
+function setTF(tf){
+  TF = tf; UNIT = tf === "1h" ? "h" : "d";
+  try{ localStorage.setItem("taperoom_tf", tf); }catch(e){}
+  if (tf === "1h"){ E = PACK.hr.e; MIR = null; ANN = Math.sqrt(6240); }
+  else { E = PACK.e; MIR = PACK.u; ANN = Math.sqrt(252); }
+  N = E.length;
+  S20 = smaArr(E, 20); S100 = smaArr(E, 100);
+  RET = new Array(N).fill(null);
+  for (let i = 1; i < N; i++) RET[i] = E[i]/E[i-1]-1;
+  URET = null;
+  if (MIR){
+    URET = new Array(N).fill(null);
+    for (let i = 1; i < N; i++) if (MIR[i] != null && MIR[i-1] != null) URET[i] = MIR[i]/MIR[i-1]-1;
+    LO = Math.max(200, MIR.findIndex(v => v != null) + 130);
+  } else LO = 200;
+  HI = N - 21;
+  document.querySelectorAll(".tfbtn").forEach(b => b.classList.toggle("on", b.dataset.tf === tf));
+  document.getElementById("legMir").style.display = MIR ? "" : "none";
+  document.getElementById("k5").textContent = tf === "1h" ? "last 5 hours" : "last 5 days";
+  document.getElementById("k20").textContent = tf === "1h" ? "last 20 hours" : "last 20 days";
+  newRound();
+}
 
 function corr60(i){
+  if (!URET) return null;
   const xs = [], ys = [];
   for (let k = i-59; k <= i; k++){ if (RET[k] != null && URET[k] != null){ xs.push(RET[k]); ys.push(-URET[k]); } }
   const n = xs.length; if (n < 40) return null;
@@ -246,17 +271,30 @@ function corr60(i){
 function vol20(i){
   const r = []; for (let k = i-19; k <= i; k++) if (RET[k] != null) r.push(RET[k]);
   const m = r.reduce((a,b)=>a+b,0)/r.length;
-  return Math.sqrt(r.reduce((a,b)=>a+(b-m)*(b-m),0)/(r.length-1))*Math.sqrt(252)*100;
+  return Math.sqrt(r.reduce((a,b)=>a+(b-m)*(b-m),0)/(r.length-1))*ANN*100;
 }
 const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-function fmtDate(v){ const s=String(v); return MN[+s.slice(4,6)-1]+" "+(+s.slice(6,8))+", "+s.slice(0,4); }
-function fmtMY(v){ const s=String(v); return MN[+s.slice(4,6)-1]+" "+s.slice(0,4); }
+function hrDate(i){ return new Date((PACK.hr.t0 + PACK.hr.dt[i]*3600)*1000); }
+function dLong(i){
+  if (TF === "1h"){ const t = hrDate(i);
+    return MN[t.getUTCMonth()]+" "+t.getUTCDate()+", "+t.getUTCFullYear()+", "
+      +String(t.getUTCHours()).padStart(2,"0")+":00 UTC"; }
+  const s = String(PACK.d[i]); return MN[+s.slice(4,6)-1]+" "+(+s.slice(6,8))+", "+s.slice(0,4);
+}
+function dMY(i){
+  if (TF === "1h"){ const t = hrDate(i); return MN[t.getUTCMonth()]+" "+t.getUTCFullYear(); }
+  const s = String(PACK.d[i]); return MN[+s.slice(4,6)-1]+" "+s.slice(0,4);
+}
+function dKey(i){
+  if (TF === "1h"){ return hrDate(i).toISOString().slice(0,13)+"h"; }
+  return PACK.d[i];
+}
 
 // ---------- state ----------
 const KEY = "taperoom_v1";
 let hist = [];
 try{ hist = JSON.parse(localStorage.getItem(KEY)||"[]"); }catch(e){ hist = []; }
-const used = new Set(hist.map(h => h.i));
+const used = new Set(hist.map(h => (h.tf||"1d")+":"+h.i));
 // cur.mode: "live" (flat — can wait, enter, or pass) | "open" (position riding) | "done"
 // cur.i: round start · cur.end: current tape index · cur.entry: entry index or null
 let cur = { i: 0, end: 0, entry: null, dir: null, mode: "live", revealed: false, ctx: {} };
@@ -274,16 +312,16 @@ const pnlSpan = p => `<span style="color:${p>0?"var(--up)":p<0?"var(--down)":"va
 
 function newRound(){
   let i, tries = 0;
-  do { i = LO + Math.floor(Math.random()*(HI-LO)); tries++; } while (used.has(i) && tries < 60);
+  do { i = LO + Math.floor(Math.random()*(HI-LO)); tries++; } while (used.has(TF+":"+i) && tries < 60);
   cur = { i, end: i, entry: null, dir: null, mode: "live", revealed: false, ctx: {} };
   hoverIdx = null;
   el("reveal").classList.remove("show");
   setBar("live");
-  status("somewhere in 19 years of history — your move");
+  status("somewhere in the hidden past — your move");
   setButtons(true);
   fillContext(); fillTape(); draw();
 }
-function maxEnd(){ return Math.min(cur.i + RIDE_MAX, N-1); }
+function maxEnd(){ return N - 1; }
 function setButtons(on){
   for (const id of ["btnShort","btnHold","btnLong"]) document.getElementById(id).disabled = !on;
 }
@@ -292,7 +330,7 @@ function fillContext(){
   const i = cur.end;
   const d5 = (E[i]-E[i-5])*1e4, d20 = (E[i]-E[i-20])*1e4;
   const v = vol20(i), c = corr60(i);
-  const y = PACK.y[i]!=null && PACK.y[i-20]!=null ? PACK.y[i]-PACK.y[i-20] : null;
+  const y = (TF === "1d" && PACK.y[i]!=null && PACK.y[i-20]!=null) ? PACK.y[i]-PACK.y[i-20] : null;
   cur.ctx = { d5: Math.round(d5), d20: Math.round(d20), vol: +v.toFixed(1),
               corr: c==null ? "" : +c.toFixed(2), dy20: y==null ? "" : +y.toFixed(2) };
   set("x5", pip(d5)+"p", d5); set("x20", pip(d20)+"p", d20);
@@ -316,9 +354,9 @@ function fillTape(){
 
 // ---------- choice / reveal ----------
 function record(entryIdx, ch, waited, held, move, pnl){
-  hist.push(Object.assign({ i: cur.i, d: PACK.d[entryIdx], c: ch, w: waited, h: held,
+  hist.push(Object.assign({ i: cur.i, tf: TF, d: dKey(entryIdx), c: ch, w: waited, h: held,
     p: Math.round(pnl*10)/10, m: Math.round(move*10)/10 }, cur.ctx));
-  used.add(cur.i);
+  used.add(TF+":"+cur.i);
   localStorage.setItem(KEY, JSON.stringify(hist));
 }
 
@@ -327,7 +365,7 @@ function wait(){
   if (cur.end >= maxEnd()){ pass(true); return; }
   cur.end++; cur.revealed = true;
   const w = cur.end - cur.i, drift = (E[cur.end]-E[cur.i])*1e4;
-  status(`flat · watched ${w}d · it drifted ${pnlSpan(drift)}`);
+  status(`flat · watched ${w}${UNIT} · it drifted ${pnlSpan(drift)}`);
   fillContext(); fillTape(); draw();
 }
 
@@ -349,7 +387,7 @@ function step(){
   if (cur.end >= maxEnd()){ exitPos(true); return; }
   cur.end++;
   const pnl = posPnl(), day = cur.end - cur.entry;
-  status(`${cur.dir==="L"?"LONG":"SHORT"} open · day ${day} · you're ${pnlSpan(pnl)}`);
+  status(`${cur.dir==="L"?"LONG":"SHORT"} open · ${day}${UNIT} in · you're ${pnlSpan(pnl)}`);
   fillContext(); fillTape(); draw();
   if (cur.end >= maxEnd()) exitPos(true);
 }
@@ -362,13 +400,13 @@ function exitPos(auto){
   const won = pnl > 0;
   el("rvPill").textContent = "BOOKED "+(won?"+":"")+pnl.toFixed(0)+"p";
   el("rvPill").className = "pill mono " + (won ? "up" : "down");
-  el("rvMove").textContent = (waited?("waited "+waited+"d · "):"")+"held "+held+"d";
+  el("rvMove").textContent = (waited?("waited "+waited+UNIT+" · "):"")+"held "+held+UNIT;
   el("rvMove").className = "pill mono hold";
   el("rvText").textContent =
     `${cur.dir==="L"?"LONG":"SHORT"} ${E[cur.entry].toFixed(4)} → ${E[cur.end].toFixed(4)}`
-    + (auto ? " — round hit the 120-session cap, position auto-booked." : ".");
+    + (auto ? " — the tape ran out of history, position auto-booked." : ".");
   el("rvWhen").textContent =
-    "You were trading "+fmtMY(PACK.d[cur.i-W+1])+" – "+fmtDate(PACK.d[cur.end])+".";
+    "You were trading "+dMY(cur.i-W+1)+" – "+dLong(cur.end)+".";
   finishRound();
 }
 function pass(auto){
@@ -379,14 +417,14 @@ function pass(auto){
   record(cur.end, "P", w, 0, move, 0);
   el("rvPill").textContent = "PASSED";
   el("rvPill").className = "pill mono hold";
-  el("rvMove").textContent = w ? "watched "+w+"d" : "no look";
+  el("rvMove").textContent = w ? "watched "+w+UNIT : "no look";
   el("rvMove").className = "pill mono hold";
   el("rvText").textContent = auto
-    ? "Round hit the 120-session cap while you watched. Passed."
-    : w ? `You watched ${w} session${w===1?"":"s"} and walked. It had moved ${pip(move)} pips.`
+    ? "The tape ran out of history while you watched. Passed."
+    : w ? `You watched ${w} bar${w===1?"":"s"} and walked. It had moved ${pip(move)} pips.`
         : "Walked without waiting. Sometimes that's the read.";
   el("rvWhen").textContent =
-    "This was "+fmtMY(PACK.d[cur.i-W+1])+" – "+fmtDate(PACK.d[cur.end])+".";
+    "This was "+dMY(cur.i-W+1)+" – "+dLong(cur.end)+".";
   finishRound();
 }
 function finishRound(){
@@ -460,7 +498,7 @@ const cv = document.getElementById("cv");
 function draw(){
   const dpr = window.devicePixelRatio||1;
   const wcss = cv.clientWidth || 640;
-  const P1H = 200, GAP = 22, P2H = 60, hcss = P1H+GAP+P2H+8;
+  const P1H = MIR ? 200 : 240, GAP = MIR ? 22 : 6, P2H = MIR ? 60 : 0, hcss = P1H+GAP+P2H+8;
   cv.style.height = hcss+"px";
   cv.width = wcss*dpr; cv.height = hcss*dpr;
   const g = cv.getContext("2d"); g.scale(dpr,dpr);
@@ -550,16 +588,17 @@ function draw(){
   }
   g.textAlign = "left"; g.font = MONO;
 
-  // pane 2: dollar mirror
+  // pane 2: dollar mirror (daily timeframe only)
   const top2 = P1H+GAP;
+  if (MIR){
   g.fillStyle = C("--muted"); g.font = "9px "+MONO.slice(5); g.textAlign="left";
   g.fillText("US DOLLAR, FLIPPED — it usually follows the price line", ML, top2-8);
   g.font = MONO;
-  const base = PACK.u[a] != null ? PACK.u[a] : null;
+  const base = MIR[a] != null ? MIR[a] : null;
   if (base){
     let l2 = 1e9, h2 = -1e9; const mirr = [];
     for (let k = a; k <= b; k++){
-      const v = PACK.u[k] != null ? 100*base/PACK.u[k] : null;
+      const v = MIR[k] != null ? 100*base/MIR[k] : null;
       mirr[k] = v;
       if (v != null){ l2 = Math.min(l2,v); h2 = Math.max(h2,v); }
     }
@@ -581,6 +620,7 @@ function draw(){
   } else {
     g.fillStyle = C("--muted"); g.textAlign="center";
     g.fillText("(no dollar data this window)", wcss/2, top2+P2H/2);
+  }
   }
 
   // crosshair
@@ -624,10 +664,10 @@ document.getElementById("resetBtn").addEventListener("click", ()=>{
   hist = []; used.clear(); localStorage.removeItem(KEY); updateBoard();
 });
 function buildCSV(){
-  const head = "entry_date,choice,days_waited,days_held,move_pips,pnl_pips,mom5_pips,mom20_pips,vol20_pct,corr60_usd_inv,us10y_d20";
+  const head = "entry_date,timeframe,choice,bars_waited,bars_held,move_pips,pnl_pips,mom5_pips,mom20_pips,vol20_pct,corr60_usd_inv,us10y_d20";
   const g = (v) => v === undefined || v === null ? "" : v;
   return [head, ...hist.map(h =>
-    [g(h.d),g(h.c),g(h.w),g(h.h),g(h.m),g(h.p),g(h.d5),g(h.d20),g(h.vol),g(h.corr),g(h.dy20)].join(","))].join("\n");
+    [g(h.d),g(h.tf||"1d"),g(h.c),g(h.w),g(h.h),g(h.m),g(h.p),g(h.d5),g(h.d20),g(h.vol),g(h.corr),g(h.dy20)].join(","))].join("\n");
 }
 document.getElementById("exportBtn").addEventListener("click", ()=>{
   const box = document.getElementById("exportBox");
@@ -647,5 +687,14 @@ window.addEventListener("resize", ()=>{ draw(); drawSpark(); });
 if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)")
   .addEventListener("change", ()=>{ draw(); drawSpark(); });
 
-updateBoard(); newRound();
+document.querySelectorAll(".tfbtn").forEach(b => b.addEventListener("click", ()=>{
+  if (cur.mode === "open" || b.dataset.tf === TF) return;
+  if (b.dataset.tf === "1h" && !PACK.hr) return;
+  setTF(b.dataset.tf);
+}));
+let initTF = "1d";
+try{ initTF = localStorage.getItem("taperoom_tf") || "1d"; }catch(e){}
+if (initTF === "1h" && !PACK.hr) initTF = "1d";
+setTF(initTF);
+updateBoard();
 </script>
