@@ -550,11 +550,10 @@ function draw(){
     }
     g.stroke(); g.setLineDash([]);
   };
-  line(S100, C("--s100"), a, i0);
-  line(S20,  C("--s20"),  a, i0);
-  line(E,    C("--price"), a, i0);
+  line(S100, C("--s100"), a, b);
+  line(S20,  C("--s20"),  a, b);
+  line(E,    C("--price"), a, b);
   if (cur.revealed && b > i0){
-    line(E, C("--price"), i0, b, true);
     const anchor = cur.entry != null ? cur.entry : i0;
     const mv = E[b]-E[anchor];
     const good = cur.dir === "S" ? -mv : mv;           // your P&L sign, not the tape's
