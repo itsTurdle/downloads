@@ -54,6 +54,13 @@ canvas{display:block;width:100%;touch-action:pan-y}
   border-radius:6px;padding:6px 8px;font-size:11px;color:var(--ink);display:none;z-index:5;
   box-shadow:0 3px 12px rgba(0,0,0,.18);white-space:nowrap}
 .calls{display:flex;gap:8px}
+#posBtns{display:none;gap:8px;margin-top:12px}
+#posBtns.show{display:flex}
+#posBtns button{flex:1;border-radius:10px;padding:12px;font-size:14px;font-weight:700;
+  letter-spacing:.10em;cursor:pointer;text-transform:uppercase;font-family:inherit}
+#btnStep{border:1px solid var(--border);background:var(--bg);color:var(--ink)}
+#btnExit{border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent)}
+#posBtns button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .calls button{flex:1;border:none;border-radius:10px;padding:16px 4px 13px;cursor:pointer;
   font-size:16px;font-weight:700;letter-spacing:.12em;color:#fff;
   font-family:inherit;text-transform:uppercase}
@@ -85,7 +92,7 @@ canvas{display:block;width:100%;touch-action:pan-y}
 #luckMsg{font-size:12px;color:var(--ink2);margin-top:6px}
 #spark{margin-top:12px}
 .boardfoot{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
-#resetBtn{background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;
+#resetBtn,#exportBtn{background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;
   text-decoration:underline;font-family:inherit}
 details{margin-top:2px}
 summary{font-size:11px;color:var(--muted);cursor:pointer;letter-spacing:.06em}
@@ -104,7 +111,7 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
     <div class="brand">
       <div class="eyebrow disp">Blind drill &middot; EUR/USD daily</div>
       <h1 class="disp">The Tape Room</h1>
-      <div class="sub">Read the tape. Call the next five sessions.</div>
+      <div class="sub">Read the tape. Enter, ride, exit &mdash; then see when you were.</div>
     </div>
     <div class="scorechips mono">
       <div class="chip"><div class="k">Rounds</div><div class="v" id="cRounds">0</div></div>
@@ -140,7 +147,7 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 
   <div class="calls">
     <button id="btnShort">Short<span class="h">EUR falls</span></button>
-    <button id="btnHold">Hold<span class="h">no edge</span></button>
+    <button id="btnHold">Hold<span class="h" id="holdSub">no edge</span></button>
     <button id="btnLong">Long<span class="h">EUR rises</span></button>
   </div>
 
@@ -151,6 +158,10 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
     </div>
     <div id="rvText"></div>
     <div id="rvWhen" class="mono"></div>
+    <div id="posBtns">
+      <button id="btnStep">Next session</button>
+      <button id="btnExit">Exit &amp; book</button>
+    </div>
     <button id="btnNext">Next round</button>
   </div>
 
@@ -170,20 +181,28 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
     <canvas id="spark" height="60" aria-label="Cumulative pips across all your calls"></canvas>
     <div class="boardfoot">
       <span style="font-size:10px;color:var(--muted)" class="mono" id="cumLab"></span>
-      <button id="resetBtn">reset scoreboard</button>
+      <span><button id="exportBtn">export CSV</button> &middot; <button id="resetBtn">reset scoreboard</button></span>
+    </div>
+    <div id="exportBox" style="display:none;margin-top:10px">
+      <textarea id="exportTxt" class="mono" readonly rows="6" style="width:100%;background:var(--bg);
+        color:var(--ink);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:10px"></textarea>
+      <button id="copyBtn" style="margin-top:6px;background:var(--accent-soft);border:1px solid var(--accent);
+        color:var(--accent);border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Copy to clipboard</button>
+      <span id="copyMsg" style="font-size:11px;color:var(--ink2);margin-left:8px"></span>
     </div>
   </div>
 
   <footer>
-    EUR/USD daily fixes: European Central Bank. Dollar mirror: UUP (Invesco USD index fund), inverted and indexed to the window start &mdash; it should track EUR/USD closely; the 60d correlation chip tells you how closely, right now. Yields: US 10-year constant maturity. Drills sample Feb 2007 &ndash; Aug 2026; the date is hidden until you commit a call. Scoring: +pips if price moved your way over the next 5 sessions; a HOLD is right when the move stays within &plusmn;35 pips. The coin-flip zone is the 95% range a pure guesser lands in after the same number of calls.
+    EUR/USD daily fixes: European Central Bank. Dollar mirror: UUP (Invesco USD index fund), inverted and indexed to the window start &mdash; it should track EUR/USD closely; the 60d correlation chip tells you how closely, right now. Yields: US 10-year constant maturity. Drills sample Feb 2007 &ndash; Aug 2026; the date stays hidden until your position is booked. LONG/SHORT opens at day 0 &mdash; walk the tape one session at a time and exit whenever you choose; pips are booked at your exit (rides cap at 120 sessions). A HOLD is judged on the next 5 sessions and is right when the move stays inside &plusmn;34 pips. The coin-flip zone is the 95% range a pure guesser lands in after the same number of calls. Every round records its date, call, days held, result, and the context you saw (momentum, vol, correlation, yields) &mdash; export the CSV from the scoreboard and study your own tape.
   </footer>
 </div>
 
 <script>
 "use strict";
 const PACK = __PACK__;
-const N = PACK.e.length, W = 120, H = 5, HOLDPIPS = 35;
+const N = PACK.e.length, W = 120, HOLD_H = 5, RIDE_MAX = 120;
 const E = PACK.e;
+const deadZone = h => Math.round(15*Math.sqrt(h));   // ±pips inside which a HOLD is right
 
 function smaArr(a, n){
   const out = new Array(a.length).fill(null); let s = 0;
@@ -199,7 +218,7 @@ for (let i = 1; i < N; i++) RET[i] = E[i]/E[i-1]-1;
 const URET = new Array(N).fill(null);
 for (let i = 1; i < N; i++) if (PACK.u[i] != null && PACK.u[i-1] != null) URET[i] = PACK.u[i]/PACK.u[i-1]-1;
 const FIRSTU = PACK.u.findIndex(v => v != null);
-const LO = Math.max(200, FIRSTU + 130), HI = N - H - 1;
+const LO = Math.max(200, FIRSTU + 130), HI = N - HOLD_H - 1;
 
 function corr60(i){
   const xs = [], ys = [];
@@ -224,15 +243,19 @@ const KEY = "taperoom_v1";
 let hist = [];
 try{ hist = JSON.parse(localStorage.getItem(KEY)||"[]"); }catch(e){ hist = []; }
 const used = new Set(hist.map(h => h.i));
-let cur = { i: 0, revealed: false, choice: null };
+// cur.mode: "live" (awaiting call) | "open" (position riding) | "done" (booked)
+// cur.end: last visible tape index; cur.revealed drives the reveal shading
+let cur = { i: 0, mode: "live", dir: null, day: 0, end: 0, revealed: false, ctx: {} };
 let hoverIdx = null;
 
 function newRound(){
   let i, tries = 0;
   do { i = LO + Math.floor(Math.random()*(HI-LO)); tries++; } while (used.has(i) && tries < 60);
-  cur = { i, revealed: false, choice: null };
+  cur = { i, mode: "live", dir: null, day: 0, end: i, revealed: false, ctx: {} };
   hoverIdx = null;
   document.getElementById("reveal").classList.remove("show");
+  document.getElementById("posBtns").classList.remove("show");
+  document.getElementById("btnNext").style.display = "";
   setButtons(true);
   fillContext(); fillTape(); draw();
 }
@@ -243,11 +266,13 @@ function pip(x){ return (x>=0?"+":"")+x.toFixed(0); }
 function fillContext(){
   const i = cur.i;
   const d5 = (E[i]-E[i-5])*1e4, d20 = (E[i]-E[i-20])*1e4;
-  set("x5", pip(d5)+"p", d5); set("x20", pip(d20)+"p", d20);
-  document.getElementById("xVol").textContent = vol20(i).toFixed(1)+"%";
-  const c = corr60(i);
-  document.getElementById("xCorr").textContent = c==null ? "–" : c.toFixed(2);
+  const v = vol20(i), c = corr60(i);
   const y = PACK.y[i]!=null && PACK.y[i-20]!=null ? PACK.y[i]-PACK.y[i-20] : null;
+  cur.ctx = { d5: Math.round(d5), d20: Math.round(d20), vol: +v.toFixed(1),
+              corr: c==null ? "" : +c.toFixed(2), dy20: y==null ? "" : +y.toFixed(2) };
+  set("x5", pip(d5)+"p", d5); set("x20", pip(d20)+"p", d20);
+  document.getElementById("xVol").textContent = v.toFixed(1)+"%";
+  document.getElementById("xCorr").textContent = c==null ? "–" : c.toFixed(2);
   set("xY", y==null ? "–" : (y>=0?"+":"")+y.toFixed(2), y||0);
 }
 function set(id, txt, sign){
@@ -266,33 +291,83 @@ function fillTape(){
 }
 
 // ---------- choice / reveal ----------
-function choose(ch){
-  if (cur.revealed) return;
-  cur.choice = ch; cur.revealed = true;
-  const i = cur.i, move = (E[i+H]-E[i])*1e4;
-  const pnl = ch === "L" ? move : ch === "S" ? -move : 0;
-  const holdRight = Math.abs(move) <= HOLDPIPS;
-  hist.push({ i, c: ch, p: Math.round(pnl*10)/10, m: Math.round(move*10)/10 });
-  used.add(i);
+function record(ch, h, move, pnl){
+  hist.push(Object.assign({ i: cur.i, d: PACK.d[cur.i], c: ch, h,
+    p: Math.round(pnl*10)/10, m: Math.round(move*10)/10 }, cur.ctx));
+  used.add(cur.i);
   localStorage.setItem(KEY, JSON.stringify(hist));
-  const pill = document.getElementById("rvPill"), mv = document.getElementById("rvMove");
-  mv.textContent = pip(move)+" pips";
-  let txt;
+}
+function rideCap(){ return Math.min(RIDE_MAX, N-1-cur.i); }
+
+function choose(ch){
+  if (cur.mode !== "live") return;
+  const i = cur.i;
   if (ch === "H"){
+    cur.mode = "done"; cur.revealed = true; cur.end = i + HOLD_H;
+    const move = (E[i+HOLD_H]-E[i])*1e4, dz = deadZone(HOLD_H);
+    const holdRight = Math.abs(move) <= dz;
+    record("H", HOLD_H, move, 0);
+    const pill = document.getElementById("rvPill");
     pill.textContent = holdRight ? "GOOD STAND-DOWN" : "MISSED MOVE";
     pill.className = "pill mono " + (holdRight ? "up" : "hold");
-    txt = holdRight
-      ? `You held. It went ${pip(move)} pips — inside the ±${HOLDPIPS} pip dead zone. Standing down was the trade.`
-      : `You held. It ran ${pip(move)} pips without you — ${E[i].toFixed(4)} → ${E[i+H].toFixed(4)}.`;
-  } else {
-    const won = pnl > 0;
-    pill.textContent = won ? "RIGHT CALL "+pip(pnl)+"p" : "WRONG "+pip(pnl)+"p";
-    pill.className = "pill mono " + (won ? "up" : "down");
-    txt = `${ch==="L"?"LONG":"SHORT"} · ${E[i].toFixed(4)} → ${E[i+H].toFixed(4)} over five sessions.`;
+    document.getElementById("rvMove").textContent = pip(move)+" pips / "+HOLD_H+"d";
+    document.getElementById("rvText").textContent = holdRight
+      ? `You stood down. It went ${pip(move)} pips in ${HOLD_H} sessions — inside the ±${dz} pip dead zone. No edge, no trade: correct.`
+      : `You stood down. It ran ${pip(move)} pips in ${HOLD_H} sessions without you — ${E[i].toFixed(4)} → ${E[i+HOLD_H].toFixed(4)}.`;
+    document.getElementById("rvWhen").textContent =
+      "You were trading "+fmtMY(PACK.d[i-W+1])+" – "+fmtDate(PACK.d[i+HOLD_H])+".";
+    finishRound();
+    return;
   }
-  document.getElementById("rvText").textContent = txt;
+  // open-ended position
+  cur.mode = "open"; cur.dir = ch; cur.day = 0; cur.end = i; cur.revealed = true;
+  document.getElementById("btnNext").style.display = "none";
+  document.getElementById("posBtns").classList.add("show");
+  document.getElementById("rvWhen").textContent = "";
+  setButtons(false);
+  document.getElementById("reveal").classList.add("show");
+  step();                       // first tap of the tape: session +1
+}
+
+function posPnl(){
+  const move = (E[cur.end]-E[cur.i])*1e4;
+  return cur.dir === "L" ? move : -move;
+}
+function step(){
+  if (cur.mode !== "open") return;
+  cur.day++; cur.end = cur.i + cur.day;
+  const pnl = posPnl();
+  const pill = document.getElementById("rvPill"), mv = document.getElementById("rvMove");
+  pill.textContent = (cur.dir==="L"?"LONG":"SHORT")+" · OPEN";
+  pill.className = "pill mono hold";
+  mv.textContent = pip(pnl)+"p · day "+cur.day;
+  mv.className = "pill mono " + (pnl > 0 ? "up" : pnl < 0 ? "down" : "hold");
+  document.getElementById("rvText").textContent =
+    `In at ${E[cur.i].toFixed(4)}, tape now ${E[cur.end].toFixed(4)}. Ride it or book it.`;
+  if (cur.day >= rideCap()){ exitPos(true); return; }
+  draw();
+}
+function exitPos(auto){
+  if (cur.mode !== "open") return;
+  cur.mode = "done";
+  const move = (E[cur.end]-E[cur.i])*1e4, pnl = posPnl();
+  record(cur.dir, cur.day, move, pnl);
+  const pill = document.getElementById("rvPill"), mv = document.getElementById("rvMove");
+  const won = pnl > 0;
+  pill.textContent = (won ? "BOOKED +" : "BOOKED ")+pnl.toFixed(0)+"p";
+  pill.className = "pill mono " + (won ? "up" : "down");
+  mv.textContent = cur.day+" session"+(cur.day===1?"":"s");
+  mv.className = "pill mono hold";
+  document.getElementById("rvText").textContent =
+    `${cur.dir==="L"?"LONG":"SHORT"} ${E[cur.i].toFixed(4)} → ${E[cur.end].toFixed(4)}`
+    + (auto ? " — tape ran out, position auto-booked." : ".");
   document.getElementById("rvWhen").textContent =
-    "You were trading "+fmtMY(PACK.d[i-W+1])+" – "+fmtDate(PACK.d[i+H])+".";
+    "You were trading "+fmtMY(PACK.d[cur.i-W+1])+" – "+fmtDate(PACK.d[cur.end])+".";
+  finishRound();
+}
+function finishRound(){
+  document.getElementById("posBtns").classList.remove("show");
+  document.getElementById("btnNext").style.display = "";
   document.getElementById("reveal").classList.add("show");
   setButtons(false);
   updateBoard(); draw();
@@ -368,7 +443,7 @@ function draw(){
   const C = k => css.getPropertyValue(k).trim();
   const MONO = '11px ui-monospace,"SF Mono",Menlo,Consolas,monospace';
   g.clearRect(0,0,wcss,hcss);
-  const i0 = cur.i, a = i0-W+1, b = cur.revealed ? i0+H : i0;
+  const i0 = cur.i, a = i0-W+1, b = cur.end;
   const ML = 6, MR = 50;
   const x = idx => ML + (wcss-ML-MR)*(idx-a)/(b-a);
 
@@ -460,7 +535,7 @@ function draw(){
     g.fillText(((l2+h2)/2).toFixed(1), wcss-MR+6, y2((l2+h2)/2));
     g.strokeStyle = C("--mir"); g.lineWidth = 2; g.lineJoin="round";
     g.beginPath(); let st = false;
-    for (let k = a; k <= (cur.revealed?b:i0); k++){
+    for (let k = a; k <= b; k++){
       if (mirr[k] == null) continue;
       st ? g.lineTo(x(k),y2(mirr[k])) : g.moveTo(x(k),y2(mirr[k])); st = true;
     }
@@ -473,7 +548,7 @@ function draw(){
   }
 
   // crosshair
-  if (hoverIdx != null && hoverIdx >= a && hoverIdx <= (cur.revealed?b:i0)){
+  if (hoverIdx != null && hoverIdx >= a && hoverIdx <= b){
     const hx = x(hoverIdx);
     g.strokeStyle = C("--crosshair"); g.lineWidth = 1;
     g.beginPath(); g.moveTo(hx,0); g.lineTo(hx,hcss-8); g.stroke();
@@ -487,7 +562,7 @@ const tt = document.getElementById("tooltip");
 cv.addEventListener("pointermove", ev => {
   const r = cv.getBoundingClientRect();
   const wcss = r.width, ML = 6, MR = 50;
-  const i0 = cur.i, a = i0-W+1, b = cur.revealed ? i0+H : i0;
+  const i0 = cur.i, a = i0-W+1, b = cur.end;
   let idx = Math.round(a + (ev.clientX-r.left-ML)/(wcss-ML-MR)*(b-a));
   idx = Math.max(a, Math.min(b, idx));
   hoverIdx = idx;
@@ -504,10 +579,32 @@ cv.addEventListener("pointerleave", () => { tt.style.display="none"; hoverIdx = 
 document.getElementById("btnLong").addEventListener("click", ()=>choose("L"));
 document.getElementById("btnShort").addEventListener("click", ()=>choose("S"));
 document.getElementById("btnHold").addEventListener("click", ()=>choose("H"));
+document.getElementById("btnStep").addEventListener("click", step);
+document.getElementById("btnExit").addEventListener("click", ()=>exitPos(false));
 document.getElementById("btnNext").addEventListener("click", newRound);
 document.getElementById("resetBtn").addEventListener("click", ()=>{
   if (!confirm("Wipe the scoreboard?")) return;
   hist = []; used.clear(); localStorage.removeItem(KEY); updateBoard();
+});
+function buildCSV(){
+  const head = "date,choice,days_held,move_pips,pnl_pips,mom5_pips,mom20_pips,vol20_pct,corr60_usd_inv,us10y_d20";
+  const g = (v) => v === undefined || v === null ? "" : v;
+  return [head, ...hist.map(h =>
+    [g(h.d),g(h.c),g(h.h),g(h.m),g(h.p),g(h.d5),g(h.d20),g(h.vol),g(h.corr),g(h.dy20)].join(","))].join("\n");
+}
+document.getElementById("exportBtn").addEventListener("click", ()=>{
+  const box = document.getElementById("exportBox");
+  const show = box.style.display === "none";
+  box.style.display = show ? "block" : "none";
+  if (show) document.getElementById("exportTxt").value = buildCSV();
+});
+document.getElementById("copyBtn").addEventListener("click", ()=>{
+  const txt = document.getElementById("exportTxt");
+  txt.value = buildCSV();
+  const done = ok => { document.getElementById("copyMsg").textContent = ok ? "copied ✓" : "select & copy manually"; };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(txt.value).then(()=>done(true), ()=>{ txt.select(); done(false); });
+  else { txt.select(); try{ done(document.execCommand("copy")); }catch(e){ done(false); } }
 });
 window.addEventListener("resize", ()=>{ draw(); drawSpark(); });
 if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)")
