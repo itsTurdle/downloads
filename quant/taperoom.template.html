@@ -1,0 +1,517 @@
+<title>The Tape Room</title>
+<style>
+:root{
+  --bg:#F3F5F7; --card:#FFFFFF; --border:#DFE4E9; --ink:#1B242C; --ink2:#5D6B77;
+  --muted:#8B99A5; --accent:#B87415; --accent-soft:rgba(184,116,21,.10);
+  --price:#1B242C; --s20:#B87415; --s100:#7A5BB5; --mir:#188F72;
+  --up:#217A50; --up-soft:rgba(33,122,80,.12); --down:#B04435; --down-soft:rgba(176,68,53,.12);
+  --hold:#5A6B8C; --hold-soft:rgba(90,107,140,.12);
+  --grid:rgba(27,36,44,.08); --crosshair:rgba(27,36,44,.35);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#101418; --card:#1A2027; --border:#262E37; --ink:#E6ECF1; --ink2:#9AA6B0;
+    --muted:#5E6A74; --accent:#E8A33D; --accent-soft:rgba(232,163,61,.12);
+    --price:#DDE4EA; --s20:#C4841C; --s100:#9678D6; --mir:#17A17D;
+    --up:#3FA372; --up-soft:rgba(63,163,114,.16); --down:#C25B4E; --down-soft:rgba(194,91,78,.16);
+    --hold:#5E7095; --hold-soft:rgba(139,155,184,.16);
+    --grid:rgba(230,236,241,.07); --crosshair:rgba(230,236,241,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#101418; --card:#1A2027; --border:#262E37; --ink:#E6ECF1; --ink2:#9AA6B0;
+  --muted:#5E6A74; --accent:#E8A33D; --accent-soft:rgba(232,163,61,.12);
+  --price:#DDE4EA; --s20:#C4841C; --s100:#9678D6; --mir:#17A17D;
+  --up:#3FA372; --up-soft:rgba(63,163,114,.16); --down:#C25B4E; --down-soft:rgba(194,91,78,.16);
+  --hold:#8B9BB8; --hold-soft:rgba(139,155,184,.16);
+  --grid:rgba(230,236,241,.07); --crosshair:rgba(230,236,241,.35);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;padding:14px 12px 40px}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.wrap{max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.disp{font-family:"Avenir Next Condensed","Helvetica Neue",("Arial Narrow"),"Arial Narrow",system-ui,sans-serif;
+  text-transform:uppercase;letter-spacing:.14em}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:2px 2px 0}
+.brand .eyebrow{font-size:10px;letter-spacing:.22em;color:var(--accent);font-weight:600}
+.brand h1{font-size:26px;line-height:1.05;font-weight:700;letter-spacing:.10em}
+.brand .sub{font-size:12px;color:var(--ink2);margin-top:3px}
+.scorechips{display:flex;gap:6px}
+.chip{background:var(--card);border:1px solid var(--border);border-radius:6px;
+  padding:5px 9px;text-align:center;min-width:52px}
+.chip .k{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.chip .v{font-size:14px;font-weight:600;margin-top:1px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px}
+.paneswrap{position:relative}
+canvas{display:block;width:100%;touch-action:pan-y}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:11px;color:var(--ink2)}
+.legend .sw{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.ctx{display:flex;flex-wrap:wrap;gap:6px}
+.ctx .chip{flex:1;min-width:88px}
+#tooltip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--border);
+  border-radius:6px;padding:6px 8px;font-size:11px;color:var(--ink);display:none;z-index:5;
+  box-shadow:0 3px 12px rgba(0,0,0,.18);white-space:nowrap}
+.calls{display:flex;gap:8px}
+.calls button{flex:1;border:none;border-radius:10px;padding:16px 4px 13px;cursor:pointer;
+  font-size:16px;font-weight:700;letter-spacing:.12em;color:#fff;
+  font-family:inherit;text-transform:uppercase}
+.calls button .h{display:block;font-size:9px;font-weight:600;letter-spacing:.16em;opacity:.85;margin-top:3px}
+#btnShort{background:var(--down)} #btnHold{background:var(--hold)} #btnLong{background:var(--up)}
+.calls button:disabled{opacity:.35;cursor:default}
+.calls button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#reveal{display:none}
+#reveal.show{display:block}
+.verdict{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pill{border-radius:999px;padding:4px 12px;font-size:13px;font-weight:700}
+.pill.up{background:var(--up-soft);color:var(--up)}
+.pill.down{background:var(--down-soft);color:var(--down)}
+.pill.hold{background:var(--hold-soft);color:var(--ink2)}
+#rvText{font-size:14px;line-height:1.5;margin-top:8px}
+#rvWhen{font-size:12px;color:var(--ink2);margin-top:4px}
+#btnNext{margin-top:12px;width:100%;border:1px solid var(--accent);background:var(--accent-soft);
+  color:var(--accent);border-radius:10px;padding:12px;font-size:14px;font-weight:700;
+  letter-spacing:.14em;cursor:pointer;text-transform:uppercase;font-family:inherit}
+#btnNext:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.board h2{font-size:11px;letter-spacing:.18em;color:var(--muted);font-weight:600;
+  text-transform:uppercase;margin-bottom:10px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.lucky{margin-top:12px}
+.lucky .lab{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:4px}
+.band{position:relative;height:14px;border-radius:7px;background:var(--border);overflow:hidden}
+.band .zone{position:absolute;top:0;bottom:0;background:var(--hold-soft)}
+.band .me{position:absolute;top:0;bottom:0;width:3px;background:var(--accent);border-radius:2px}
+#luckMsg{font-size:12px;color:var(--ink2);margin-top:6px}
+#spark{margin-top:12px}
+.boardfoot{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
+#resetBtn{background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;
+  text-decoration:underline;font-family:inherit}
+details{margin-top:2px}
+summary{font-size:11px;color:var(--muted);cursor:pointer;letter-spacing:.06em}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:11px}
+th,td{text-align:right;padding:3px 6px;border-bottom:1px solid var(--border);color:var(--ink2)}
+th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:9px;letter-spacing:.1em}
+footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
+@media (prefers-reduced-motion:no-preference){
+  #reveal.show{animation:rv .28s ease-out}
+  @keyframes rv{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="eyebrow disp">Blind drill &middot; EUR/USD daily</div>
+      <h1 class="disp">The Tape Room</h1>
+      <div class="sub">Read the tape. Call the next five sessions.</div>
+    </div>
+    <div class="scorechips mono">
+      <div class="chip"><div class="k">Rounds</div><div class="v" id="cRounds">0</div></div>
+      <div class="chip"><div class="k">Hit</div><div class="v" id="cHit">&ndash;</div></div>
+      <div class="chip"><div class="k">Pips</div><div class="v" id="cPips">0</div></div>
+    </div>
+  </header>
+
+  <div class="card">
+    <div class="paneswrap" id="panes">
+      <canvas id="cv" height="420" aria-label="EUR/USD price chart, dates hidden, with 20 and 100 session moving averages and an inverted dollar-index subpanel"></canvas>
+      <div id="tooltip" class="mono"></div>
+    </div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--price)"></span>EUR/USD</span>
+      <span><span class="sw" style="background:var(--s20)"></span>SMA 20</span>
+      <span><span class="sw" style="background:var(--s100)"></span>SMA 100</span>
+      <span><span class="sw" style="background:var(--mir)"></span>dollar mirror (UUP inverted)</span>
+    </div>
+    <details>
+      <summary>raw tape &mdash; last 15 sessions</summary>
+      <div style="overflow-x:auto"><table class="mono" id="tapeTable"></table></div>
+    </details>
+  </div>
+
+  <div class="ctx mono">
+    <div class="chip"><div class="k">5d move</div><div class="v" id="x5"></div></div>
+    <div class="chip"><div class="k">20d move</div><div class="v" id="x20"></div></div>
+    <div class="chip"><div class="k">vol 20d</div><div class="v" id="xVol"></div></div>
+    <div class="chip"><div class="k">corr vs USD&#8595; 60d</div><div class="v" id="xCorr"></div></div>
+    <div class="chip"><div class="k">US 10Y &Delta;20d</div><div class="v" id="xY"></div></div>
+  </div>
+
+  <div class="calls">
+    <button id="btnShort">Short<span class="h">EUR falls</span></button>
+    <button id="btnHold">Hold<span class="h">no edge</span></button>
+    <button id="btnLong">Long<span class="h">EUR rises</span></button>
+  </div>
+
+  <div class="card" id="reveal">
+    <div class="verdict">
+      <span class="pill mono" id="rvPill"></span>
+      <span class="pill mono hold" id="rvMove"></span>
+    </div>
+    <div id="rvText"></div>
+    <div id="rvWhen" class="mono"></div>
+    <button id="btnNext">Next round</button>
+  </div>
+
+  <div class="card board">
+    <h2 class="disp">Scoreboard</h2>
+    <div class="stats mono">
+      <div class="chip"><div class="k">Calls</div><div class="v" id="sCalls">0</div></div>
+      <div class="chip"><div class="k">Hits</div><div class="v" id="sHits">0</div></div>
+      <div class="chip"><div class="k">Avg pips</div><div class="v" id="sAvg">&ndash;</div></div>
+      <div class="chip"><div class="k">Holds</div><div class="v" id="sHolds">0</div></div>
+    </div>
+    <div class="lucky">
+      <div class="lab disp"><span>Hit rate vs the coin-flip zone</span><span class="mono" id="luckLab"></span></div>
+      <div class="band"><div class="zone" id="luckZone"></div><div class="me" id="luckMe" style="display:none"></div></div>
+      <div id="luckMsg"></div>
+    </div>
+    <canvas id="spark" height="60" aria-label="Cumulative pips across all your calls"></canvas>
+    <div class="boardfoot">
+      <span style="font-size:10px;color:var(--muted)" class="mono" id="cumLab"></span>
+      <button id="resetBtn">reset scoreboard</button>
+    </div>
+  </div>
+
+  <footer>
+    EUR/USD daily fixes: European Central Bank. Dollar mirror: UUP (Invesco USD index fund), inverted and indexed to the window start &mdash; it should track EUR/USD closely; the 60d correlation chip tells you how closely, right now. Yields: US 10-year constant maturity. Drills sample Feb 2007 &ndash; Aug 2026; the date is hidden until you commit a call. Scoring: +pips if price moved your way over the next 5 sessions; a HOLD is right when the move stays within &plusmn;35 pips. The coin-flip zone is the 95% range a pure guesser lands in after the same number of calls.
+  </footer>
+</div>
+
+<script>
+"use strict";
+const PACK = __PACK__;
+const N = PACK.e.length, W = 120, H = 5, HOLDPIPS = 35;
+const E = PACK.e;
+
+function smaArr(a, n){
+  const out = new Array(a.length).fill(null); let s = 0;
+  for (let i = 0; i < a.length; i++){
+    s += a[i]; if (i >= n) s -= a[i-n];
+    if (i >= n-1) out[i] = s/n;
+  }
+  return out;
+}
+const S20 = smaArr(E, 20), S100 = smaArr(E, 100);
+const RET = new Array(N).fill(null);
+for (let i = 1; i < N; i++) RET[i] = E[i]/E[i-1]-1;
+const URET = new Array(N).fill(null);
+for (let i = 1; i < N; i++) if (PACK.u[i] != null && PACK.u[i-1] != null) URET[i] = PACK.u[i]/PACK.u[i-1]-1;
+const FIRSTU = PACK.u.findIndex(v => v != null);
+const LO = Math.max(200, FIRSTU + 130), HI = N - H - 1;
+
+function corr60(i){
+  const xs = [], ys = [];
+  for (let k = i-59; k <= i; k++){ if (RET[k] != null && URET[k] != null){ xs.push(RET[k]); ys.push(-URET[k]); } }
+  const n = xs.length; if (n < 40) return null;
+  const mx = xs.reduce((a,b)=>a+b,0)/n, my = ys.reduce((a,b)=>a+b,0)/n;
+  let sxy=0, sx=0, sy=0;
+  for (let k = 0; k < n; k++){ const dx=xs[k]-mx, dy=ys[k]-my; sxy+=dx*dy; sx+=dx*dx; sy+=dy*dy; }
+  return sxy/Math.sqrt(sx*sy);
+}
+function vol20(i){
+  const r = []; for (let k = i-19; k <= i; k++) if (RET[k] != null) r.push(RET[k]);
+  const m = r.reduce((a,b)=>a+b,0)/r.length;
+  return Math.sqrt(r.reduce((a,b)=>a+(b-m)*(b-m),0)/(r.length-1))*Math.sqrt(252)*100;
+}
+const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDate(v){ const s=String(v); return MN[+s.slice(4,6)-1]+" "+(+s.slice(6,8))+", "+s.slice(0,4); }
+function fmtMY(v){ const s=String(v); return MN[+s.slice(4,6)-1]+" "+s.slice(0,4); }
+
+// ---------- state ----------
+const KEY = "taperoom_v1";
+let hist = [];
+try{ hist = JSON.parse(localStorage.getItem(KEY)||"[]"); }catch(e){ hist = []; }
+const used = new Set(hist.map(h => h.i));
+let cur = { i: 0, revealed: false, choice: null };
+let hoverIdx = null;
+
+function newRound(){
+  let i, tries = 0;
+  do { i = LO + Math.floor(Math.random()*(HI-LO)); tries++; } while (used.has(i) && tries < 60);
+  cur = { i, revealed: false, choice: null };
+  hoverIdx = null;
+  document.getElementById("reveal").classList.remove("show");
+  setButtons(true);
+  fillContext(); fillTape(); draw();
+}
+function setButtons(on){
+  for (const id of ["btnShort","btnHold","btnLong"]) document.getElementById(id).disabled = !on;
+}
+function pip(x){ return (x>=0?"+":"")+x.toFixed(0); }
+function fillContext(){
+  const i = cur.i;
+  const d5 = (E[i]-E[i-5])*1e4, d20 = (E[i]-E[i-20])*1e4;
+  set("x5", pip(d5)+"p", d5); set("x20", pip(d20)+"p", d20);
+  document.getElementById("xVol").textContent = vol20(i).toFixed(1)+"%";
+  const c = corr60(i);
+  document.getElementById("xCorr").textContent = c==null ? "–" : c.toFixed(2);
+  const y = PACK.y[i]!=null && PACK.y[i-20]!=null ? PACK.y[i]-PACK.y[i-20] : null;
+  set("xY", y==null ? "–" : (y>=0?"+":"")+y.toFixed(2), y||0);
+}
+function set(id, txt, sign){
+  const el = document.getElementById(id); el.textContent = txt;
+  el.style.color = sign > 0 ? "var(--up)" : sign < 0 ? "var(--down)" : "var(--ink)";
+}
+function fillTape(){
+  const i = cur.i; let rows = "<tr><th>day</th><th>close</th><th>Δ pips</th><th>SMA20</th></tr>";
+  for (let k = i-14; k <= i; k++){
+    const d = (E[k]-E[k-1])*1e4;
+    rows += `<tr><td>d${k-i===0?"0":k-i}</td><td>${E[k].toFixed(4)}</td>`+
+      `<td style="color:${d>=0?"var(--up)":"var(--down)"}">${pip(d)}</td>`+
+      `<td>${S20[k]?S20[k].toFixed(4):"–"}</td></tr>`;
+  }
+  document.getElementById("tapeTable").innerHTML = rows;
+}
+
+// ---------- choice / reveal ----------
+function choose(ch){
+  if (cur.revealed) return;
+  cur.choice = ch; cur.revealed = true;
+  const i = cur.i, move = (E[i+H]-E[i])*1e4;
+  const pnl = ch === "L" ? move : ch === "S" ? -move : 0;
+  const holdRight = Math.abs(move) <= HOLDPIPS;
+  hist.push({ i, c: ch, p: Math.round(pnl*10)/10, m: Math.round(move*10)/10 });
+  used.add(i);
+  localStorage.setItem(KEY, JSON.stringify(hist));
+  const pill = document.getElementById("rvPill"), mv = document.getElementById("rvMove");
+  mv.textContent = pip(move)+" pips";
+  let txt;
+  if (ch === "H"){
+    pill.textContent = holdRight ? "GOOD STAND-DOWN" : "MISSED MOVE";
+    pill.className = "pill mono " + (holdRight ? "up" : "hold");
+    txt = holdRight
+      ? `You held. It went ${pip(move)} pips — inside the ±${HOLDPIPS} pip dead zone. Standing down was the trade.`
+      : `You held. It ran ${pip(move)} pips without you — ${E[i].toFixed(4)} → ${E[i+H].toFixed(4)}.`;
+  } else {
+    const won = pnl > 0;
+    pill.textContent = won ? "RIGHT CALL "+pip(pnl)+"p" : "WRONG "+pip(pnl)+"p";
+    pill.className = "pill mono " + (won ? "up" : "down");
+    txt = `${ch==="L"?"LONG":"SHORT"} · ${E[i].toFixed(4)} → ${E[i+H].toFixed(4)} over five sessions.`;
+  }
+  document.getElementById("rvText").textContent = txt;
+  document.getElementById("rvWhen").textContent =
+    "You were trading "+fmtMY(PACK.d[i-W+1])+" – "+fmtDate(PACK.d[i+H])+".";
+  document.getElementById("reveal").classList.add("show");
+  setButtons(false);
+  updateBoard(); draw();
+}
+
+// ---------- scoreboard ----------
+function updateBoard(){
+  const calls = hist.filter(h => h.c !== "H");
+  const holds = hist.length - calls.length;
+  const hits = calls.filter(h => h.p > 0).length;
+  const tot = hist.reduce((a,h)=>a+h.p, 0);
+  document.getElementById("cRounds").textContent = hist.length;
+  document.getElementById("cPips").textContent = pip(tot);
+  document.getElementById("cPips").style.color = tot>0?"var(--up)":tot<0?"var(--down)":"var(--ink)";
+  document.getElementById("sCalls").textContent = calls.length;
+  document.getElementById("sHits").textContent = hits;
+  document.getElementById("sHolds").textContent = holds;
+  document.getElementById("sAvg").textContent = calls.length ? pip(tot/calls.length) : "–";
+  const hr = calls.length ? hits/calls.length*100 : null;
+  document.getElementById("cHit").textContent = hr==null ? "–" : hr.toFixed(0)+"%";
+  const n = calls.length;
+  const zone = document.getElementById("luckZone"), me = document.getElementById("luckMe");
+  if (n >= 1){
+    const half = 1.96*Math.sqrt(0.25/n)*100;
+    const lo = Math.max(0,50-half), hi = Math.min(100,50+half);
+    zone.style.left = lo+"%"; zone.style.width = (hi-lo)+"%";
+    me.style.display = "block"; me.style.left = "calc("+hr+"% - 1px)";
+    document.getElementById("luckLab").textContent = hr.toFixed(0)+"% vs ["+lo.toFixed(0)+"–"+hi.toFixed(0)+"%]";
+    const msg = document.getElementById("luckMsg");
+    if (n < 10) msg.textContent = n+" calls — too few to separate skill from luck. Keep going.";
+    else if (hr > hi) msg.textContent = "Above the zone after "+n+" calls. Interesting. Keep going — it has to survive more rounds.";
+    else if (hr < lo) msg.textContent = "Below the zone — the tape is reading you. What would fading yourself do?";
+    else msg.textContent = "Inside the zone: statistically indistinguishable from coin flips after "+n+" calls.";
+  } else {
+    zone.style.left = "30%"; zone.style.width = "40%"; me.style.display = "none";
+    document.getElementById("luckLab").textContent = "";
+    document.getElementById("luckMsg").textContent = "Make directional calls to start the test.";
+  }
+  drawSpark();
+}
+function drawSpark(){
+  const cv = document.getElementById("spark");
+  const dpr = window.devicePixelRatio||1, wcss = cv.clientWidth||300, hcss = 60;
+  cv.width = wcss*dpr; cv.height = hcss*dpr;
+  const g = cv.getContext("2d"); g.scale(dpr,dpr); g.clearRect(0,0,wcss,hcss);
+  const css = getComputedStyle(document.documentElement);
+  const cum = []; let s = 0;
+  for (const h of hist){ s += h.p; cum.push(s); }
+  document.getElementById("cumLab").textContent = cum.length ? "cumulative pips, all rounds" : "";
+  if (cum.length < 2) return;
+  const lo = Math.min(0,...cum), hi = Math.max(0,...cum), pad=6;
+  const x = i => 2+(wcss-4)*i/(cum.length-1);
+  const y = v => hi===lo ? hcss/2 : pad+(hcss-2*pad)*(1-(v-lo)/(hi-lo));
+  g.strokeStyle = css.getPropertyValue("--border").trim(); g.lineWidth=1;
+  g.beginPath(); g.moveTo(0,y(0)); g.lineTo(wcss,y(0)); g.stroke();
+  g.strokeStyle = css.getPropertyValue("--accent").trim(); g.lineWidth=2; g.lineJoin="round";
+  g.beginPath(); cum.forEach((v,i)=>{ i?g.lineTo(x(i),y(v)):g.moveTo(x(i),y(v)); }); g.stroke();
+  const last = cum[cum.length-1];
+  g.fillStyle = css.getPropertyValue(last>=0?"--up":"--down").trim();
+  g.beginPath(); g.arc(x(cum.length-1),y(last),3.5,0,7); g.fill();
+}
+
+// ---------- chart ----------
+const cv = document.getElementById("cv");
+function draw(){
+  const dpr = window.devicePixelRatio||1;
+  const wcss = cv.clientWidth || 640;
+  const P1H = 280, GAP = 26, P2H = 96, hcss = P1H+GAP+P2H+8;
+  cv.style.height = hcss+"px";
+  cv.width = wcss*dpr; cv.height = hcss*dpr;
+  const g = cv.getContext("2d"); g.scale(dpr,dpr);
+  const css = getComputedStyle(document.documentElement);
+  const C = k => css.getPropertyValue(k).trim();
+  const MONO = '11px ui-monospace,"SF Mono",Menlo,Consolas,monospace';
+  g.clearRect(0,0,wcss,hcss);
+  const i0 = cur.i, a = i0-W+1, b = cur.revealed ? i0+H : i0;
+  const ML = 6, MR = 50;
+  const x = idx => ML + (wcss-ML-MR)*(idx-a)/(b-a);
+
+  // pane 1 range
+  let lo = 1e9, hi = -1e9;
+  for (let k = a; k <= b; k++){
+    for (const v of [E[k], S20[k], S100[k]]) if (v != null){ lo = Math.min(lo,v); hi = Math.max(hi,v); }
+  }
+  const pad = (hi-lo)*0.07; lo -= pad; hi += pad;
+  const y1 = v => 4 + (P1H-8)*(1-(v-lo)/(hi-lo));
+
+  // reveal zone shading
+  if (cur.revealed){
+    g.save(); g.globalAlpha = 0.5;
+    g.fillStyle = C("--accent-soft");
+    g.fillRect(x(i0), 0, x(b)-x(i0), P1H);
+    g.restore();
+  }
+  // grid + right labels
+  g.font = MONO; g.textAlign = "left"; g.textBaseline = "middle";
+  for (let t = 0; t < 4; t++){
+    const v = lo + (hi-lo)*(t+0.5)/4, yy = y1(v);
+    g.strokeStyle = C("--grid"); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(ML,yy); g.lineTo(wcss-MR,yy); g.stroke();
+    g.fillStyle = C("--muted"); g.fillText(v.toFixed(3), wcss-MR+6, yy);
+  }
+  // day-0 marker
+  g.setLineDash([3,3]); g.strokeStyle = C("--accent"); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x(i0),0); g.lineTo(x(i0),P1H); g.stroke(); g.setLineDash([]);
+  g.fillStyle = C("--accent"); g.font = "9px "+MONO.slice(5); g.textAlign="center";
+  g.fillText("day 0", x(i0), 8); g.font = MONO;
+
+  const line = (arr, col, from, to, dash) => {
+    g.strokeStyle = col; g.lineWidth = 2; g.lineJoin = "round"; g.lineCap="round";
+    if (dash) g.setLineDash([5,4]);
+    g.beginPath(); let started = false;
+    for (let k = from; k <= to; k++){
+      if (arr[k] == null) continue;
+      const xx = x(k), yy = y1(arr[k]);
+      started ? g.lineTo(xx,yy) : g.moveTo(xx,yy); started = true;
+    }
+    g.stroke(); g.setLineDash([]);
+  };
+  line(S100, C("--s100"), a, i0);
+  line(S20,  C("--s20"),  a, i0);
+  line(E,    C("--price"), a, i0);
+  if (cur.revealed){
+    line(E, C("--price"), i0, b, true);
+    const mv = E[b]-E[i0];
+    g.fillStyle = C(mv>=0?"--up":"--down");
+    g.beginPath(); g.arc(x(b), y1(E[b]), 4, 0, 7); g.fill();
+    g.textAlign = "right"; g.fillStyle = C("--ink");
+    g.fillText(pip(mv*1e4)+"p", x(b)-8, y1(E[b])-10);
+  }
+  // end labels (direct labels, ink with swatch ticks) — inside the plot edge,
+  // right-aligned so they never collide with the axis number column
+  g.textAlign = "right";
+  const ends = cur.revealed ? [] :
+    [["EUR/USD", E[i0], C("--price")], ["s20", S20[i0], C("--s20")], ["s100", S100[i0], C("--s100")]]
+    .filter(e => e[1] != null).sort((p,q)=>y1(p[1])-y1(q[1]));
+  let lastY = -20;
+  for (const [nm,v,col] of ends){
+    let yy = Math.max(y1(v), lastY+13); lastY = yy;
+    g.font = "9px "+MONO.slice(5);
+    g.fillStyle = col; g.fillRect(wcss-MR-8, yy-7, 6, 3);
+    g.fillStyle = C("--ink2");
+    g.fillText(nm, wcss-MR-12, yy-2);
+  }
+  g.textAlign = "left"; g.font = MONO;
+
+  // pane 2: dollar mirror
+  const top2 = P1H+GAP;
+  g.fillStyle = C("--muted"); g.font = "9px "+MONO.slice(5); g.textAlign="left";
+  g.fillText("DOLLAR MIRROR — UUP inverted, window start = 100", ML, top2-8);
+  g.font = MONO;
+  const base = PACK.u[a] != null ? PACK.u[a] : null;
+  if (base){
+    let l2 = 1e9, h2 = -1e9; const mirr = [];
+    for (let k = a; k <= b; k++){
+      const v = PACK.u[k] != null ? 100*base/PACK.u[k] : null;
+      mirr[k] = v;
+      if (v != null){ l2 = Math.min(l2,v); h2 = Math.max(h2,v); }
+    }
+    const p2 = (h2-l2)*0.15||0.5; l2 -= p2; h2 += p2;
+    const y2 = v => top2 + (P2H)*(1-(v-l2)/(h2-l2));
+    g.strokeStyle = C("--grid");
+    g.beginPath(); g.moveTo(ML,y2((l2+h2)/2)); g.lineTo(wcss-MR,y2((l2+h2)/2)); g.stroke();
+    g.fillStyle = C("--muted"); g.textAlign="left";
+    g.fillText(((l2+h2)/2).toFixed(1), wcss-MR+6, y2((l2+h2)/2));
+    g.strokeStyle = C("--mir"); g.lineWidth = 2; g.lineJoin="round";
+    g.beginPath(); let st = false;
+    for (let k = a; k <= (cur.revealed?b:i0); k++){
+      if (mirr[k] == null) continue;
+      st ? g.lineTo(x(k),y2(mirr[k])) : g.moveTo(x(k),y2(mirr[k])); st = true;
+    }
+    g.stroke();
+    g.setLineDash([3,3]); g.strokeStyle = C("--accent"); g.lineWidth=1;
+    g.beginPath(); g.moveTo(x(i0),top2); g.lineTo(x(i0),top2+P2H); g.stroke(); g.setLineDash([]);
+  } else {
+    g.fillStyle = C("--muted"); g.textAlign="center";
+    g.fillText("(no dollar data this window)", wcss/2, top2+P2H/2);
+  }
+
+  // crosshair
+  if (hoverIdx != null && hoverIdx >= a && hoverIdx <= (cur.revealed?b:i0)){
+    const hx = x(hoverIdx);
+    g.strokeStyle = C("--crosshair"); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(hx,0); g.lineTo(hx,hcss-8); g.stroke();
+    g.fillStyle = C("--price");
+    g.beginPath(); g.arc(hx, y1(E[hoverIdx]), 3, 0, 7); g.fill();
+  }
+}
+
+// tooltip + pointer
+const tt = document.getElementById("tooltip");
+cv.addEventListener("pointermove", ev => {
+  const r = cv.getBoundingClientRect();
+  const wcss = r.width, ML = 6, MR = 50;
+  const i0 = cur.i, a = i0-W+1, b = cur.revealed ? i0+H : i0;
+  let idx = Math.round(a + (ev.clientX-r.left-ML)/(wcss-ML-MR)*(b-a));
+  idx = Math.max(a, Math.min(b, idx));
+  hoverIdx = idx;
+  const rel = idx-i0;
+  tt.innerHTML = `d${rel>0?"+"+rel:rel} &middot; ${E[idx].toFixed(4)}`
+    + (S20[idx]?`<br>s20 ${S20[idx].toFixed(4)} &middot; s100 ${S100[idx]?S100[idx].toFixed(4):"–"}`:"");
+  tt.style.display = "block";
+  const px = Math.min(Math.max(ev.clientX-r.left+12, 4), wcss-130);
+  tt.style.left = px+"px"; tt.style.top = (ev.clientY-r.top+14)+"px";
+  draw();
+});
+cv.addEventListener("pointerleave", () => { tt.style.display="none"; hoverIdx = null; draw(); });
+
+document.getElementById("btnLong").addEventListener("click", ()=>choose("L"));
+document.getElementById("btnShort").addEventListener("click", ()=>choose("S"));
+document.getElementById("btnHold").addEventListener("click", ()=>choose("H"));
+document.getElementById("btnNext").addEventListener("click", newRound);
+document.getElementById("resetBtn").addEventListener("click", ()=>{
+  if (!confirm("Wipe the scoreboard?")) return;
+  hist = []; used.clear(); localStorage.removeItem(KEY); updateBoard();
+});
+window.addEventListener("resize", ()=>{ draw(); drawSpark(); });
+if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)")
+  .addEventListener("change", ()=>{ draw(); drawSpark(); });
+
+updateBoard(); newRound();
+</script>
