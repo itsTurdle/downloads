@@ -195,6 +195,7 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
       <summary>how to play &amp; data sources</summary>
       <div class="guide">
         <p>Each round drops you at a hidden date in the past. <b>1D</b> plays daily bars (2007&ndash;2026, with the dollar-mirror pane); <b>1H</b> plays hourly bars. <b>WAIT</b> walks the tape one bar while you stay flat &mdash; wait as long as you like. <b>LONG / SHORT</b> enters at the current bar; ride with NEXT SESSION and book with EXIT whenever you choose &mdash; there is no time limit, a position only auto-books if the data itself ends. <b>Pass</b> ends the round without a trade. Dates unseal only when the round ends.</p>
+        <p><b>Drag the chart</b> sideways to look further back in history; after a round ends, drag right to watch what happened after you left. Any button snaps the view back to now.</p>
         <p>The <b>coin-flip zone</b> is the 95% range a pure guesser's hit rate lands in after the same number of trades. Every round logs its date, your action, sessions waited and held, the result in pips, and the context you saw &mdash; export the CSV and study your own tape.</p>
         <p>Prices: ECB daily EUR/USD fixes (1D); HistData.com minute data resampled to hourly (1H). Dollar mirror: UUP. Yields: US 10-year constant maturity.</p>
       </div>
@@ -299,6 +300,7 @@ const used = new Set(hist.map(h => (h.tf||"1d")+":"+h.i));
 // cur.i: round start · cur.end: current tape index · cur.entry: entry index or null
 let cur = { i: 0, end: 0, entry: null, dir: null, mode: "live", revealed: false, ctx: {} };
 let hoverIdx = null;
+let viewOff = 0, VIEW = { a: 0, b: 1 };    // chart pan offset in bars; VIEW = drawn range
 const el = id => document.getElementById(id);
 
 function setBar(mode){
@@ -314,7 +316,7 @@ function newRound(){
   let i, tries = 0;
   do { i = LO + Math.floor(Math.random()*(HI-LO)); tries++; } while (used.has(TF+":"+i) && tries < 60);
   cur = { i, end: i, entry: null, dir: null, mode: "live", revealed: false, ctx: {} };
-  hoverIdx = null;
+  hoverIdx = null; viewOff = 0;
   el("reveal").classList.remove("show");
   setBar("live");
   status("somewhere in the hidden past — your move");
@@ -363,7 +365,7 @@ function record(entryIdx, ch, waited, held, move, pnl){
 function wait(){
   if (cur.mode !== "live") return;
   if (cur.end >= maxEnd()){ pass(true); return; }
-  cur.end++; cur.revealed = true;
+  cur.end++; cur.revealed = true; viewOff = 0;
   const w = cur.end - cur.i, drift = (E[cur.end]-E[cur.i])*1e4;
   status(`flat · watched ${w}${UNIT} · it drifted ${pnlSpan(drift)}`);
   fillContext(); fillTape(); draw();
@@ -385,7 +387,7 @@ function posPnl(){
 function step(){
   if (cur.mode !== "open") return;
   if (cur.end >= maxEnd()){ exitPos(true); return; }
-  cur.end++;
+  cur.end++; viewOff = 0;
   const pnl = posPnl(), day = cur.end - cur.entry;
   status(`${cur.dir==="L"?"LONG":"SHORT"} open · ${day}${UNIT} in · you're ${pnlSpan(pnl)}`);
   fillContext(); fillTape(); draw();
@@ -429,7 +431,7 @@ function pass(auto){
 }
 function finishRound(){
   setBar("done");
-  status("round over — tape unsealed below");
+  status("round over — drag the chart → to see the aftermath");
   el("reveal").classList.add("show");
   setButtons(false);
   updateBoard(); draw();
@@ -506,7 +508,11 @@ function draw(){
   const C = k => css.getPropertyValue(k).trim();
   const MONO = '11px ui-monospace,"SF Mono",Menlo,Consolas,monospace';
   g.clearRect(0,0,wcss,hcss);
-  const i0 = cur.i, a = i0-W+1, b = cur.end;
+  const i0 = cur.i;
+  const maxR = cur.mode === "done" ? Math.min(240, N-1-cur.end) : 0;
+  viewOff = Math.max(Math.min(viewOff, maxR), -(i0-W));
+  const a = i0-W+1 + viewOff, b = cur.end + viewOff;
+  VIEW = { a, b };
   const ML = 6, MR = 50;
   const x = idx => ML + (wcss-ML-MR)*(idx-a)/(b-a);
 
@@ -518,11 +524,12 @@ function draw(){
   const pad = (hi-lo)*0.07; lo -= pad; hi += pad;
   const y1 = v => 4 + (P1H-8)*(1-(v-lo)/(hi-lo));
 
-  // reveal zone shading
-  if (cur.revealed){
+  // reveal zone shading (clamped to view)
+  if (cur.revealed && cur.end > i0 && cur.end >= a && i0 <= b){
     g.save(); g.globalAlpha = 0.5;
     g.fillStyle = C("--accent-soft");
-    g.fillRect(x(i0), 0, x(b)-x(i0), P1H);
+    const zx0 = x(Math.max(i0, a)), zx1 = x(Math.min(cur.end, b));
+    g.fillRect(zx0, 0, zx1-zx0, P1H);
     g.restore();
   }
   // grid + right labels
@@ -534,10 +541,12 @@ function draw(){
     g.fillStyle = C("--muted"); g.fillText(v.toFixed(3), wcss-MR+6, yy);
   }
   // day-0 marker
-  g.setLineDash([3,3]); g.strokeStyle = C("--accent"); g.lineWidth = 1;
-  g.beginPath(); g.moveTo(x(i0),0); g.lineTo(x(i0),P1H); g.stroke(); g.setLineDash([]);
-  g.fillStyle = C("--accent"); g.font = "9px "+MONO.slice(5); g.textAlign="center";
-  g.fillText("day 0", x(i0), 8); g.font = MONO;
+  if (i0 >= a && i0 <= b){
+    g.setLineDash([3,3]); g.strokeStyle = C("--accent"); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x(i0),0); g.lineTo(x(i0),P1H); g.stroke(); g.setLineDash([]);
+    g.fillStyle = C("--accent"); g.font = "9px "+MONO.slice(5); g.textAlign="center";
+    g.fillText("day 0", x(i0), 8); g.font = MONO;
+  }
 
   const line = (arr, col, from, to, dash) => {
     g.strokeStyle = col; g.lineWidth = 2; g.lineJoin = "round"; g.lineCap="round";
@@ -553,16 +562,22 @@ function draw(){
   line(S100, C("--s100"), a, b);
   line(S20,  C("--s20"),  a, b);
   line(E,    C("--price"), a, b);
-  if (cur.revealed && b > i0){
+  if (cur.revealed && cur.end > i0 && cur.end >= a && cur.end <= b){
     const anchor = cur.entry != null ? cur.entry : i0;
-    const mv = E[b]-E[anchor];
+    const mv = E[cur.end]-E[anchor];
     const good = cur.dir === "S" ? -mv : mv;           // your P&L sign, not the tape's
     g.fillStyle = C(good >= 0 ? "--up" : "--down");
-    g.beginPath(); g.arc(x(b), y1(E[b]), 4, 0, 7); g.fill();
+    g.beginPath(); g.arc(x(cur.end), y1(E[cur.end]), 4, 0, 7); g.fill();
     g.textAlign = "right"; g.fillStyle = C("--ink");
-    g.fillText(pip((cur.dir==="S"?-mv:mv)*1e4)+"p", x(b)-8, y1(E[b])-10);
+    g.fillText(pip((cur.dir==="S"?-mv:mv)*1e4)+"p", x(cur.end)-8, y1(E[cur.end])-10);
   }
-  if (cur.entry != null){
+  if (b > cur.end && cur.end >= a && cur.end <= b){   // aftermath: mark where you left
+    g.setLineDash([2,3]); g.strokeStyle = C("--muted"); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x(cur.end),0); g.lineTo(x(cur.end),P1H); g.stroke(); g.setLineDash([]);
+    g.fillStyle = C("--muted"); g.font = "9px "+MONO.slice(5); g.textAlign="center";
+    g.fillText("you left", x(cur.end), P1H-4); g.font = MONO;
+  }
+  if (cur.entry != null && cur.entry >= a && cur.entry <= b){
     const col = C(cur.dir === "L" ? "--up" : "--down");
     g.strokeStyle = col; g.lineWidth = 1;
     g.beginPath(); g.moveTo(x(cur.entry), 0); g.lineTo(x(cur.entry), P1H); g.stroke();
@@ -574,7 +589,7 @@ function draw(){
   // end labels (direct labels, ink with swatch ticks) — inside the plot edge,
   // right-aligned so they never collide with the axis number column
   g.textAlign = "right";
-  const ends = cur.revealed ? [] :
+  const ends = (cur.revealed || viewOff !== 0) ? [] :
     [["EUR/USD", E[i0], C("--price")], ["s20", S20[i0], C("--s20")], ["s100", S100[i0], C("--s100")]]
     .filter(e => e[1] != null).sort((p,q)=>y1(p[1])-y1(q[1]));
   let lastY = -20;
@@ -614,8 +629,10 @@ function draw(){
       st ? g.lineTo(x(k),y2(mirr[k])) : g.moveTo(x(k),y2(mirr[k])); st = true;
     }
     g.stroke();
-    g.setLineDash([3,3]); g.strokeStyle = C("--accent"); g.lineWidth=1;
-    g.beginPath(); g.moveTo(x(i0),top2); g.lineTo(x(i0),top2+P2H); g.stroke(); g.setLineDash([]);
+    if (i0 >= a && i0 <= b){
+      g.setLineDash([3,3]); g.strokeStyle = C("--accent"); g.lineWidth=1;
+      g.beginPath(); g.moveTo(x(i0),top2); g.lineTo(x(i0),top2+P2H); g.stroke(); g.setLineDash([]);
+    }
   } else {
     g.fillStyle = C("--muted"); g.textAlign="center";
     g.fillText("(no dollar data this window)", wcss/2, top2+P2H/2);
@@ -632,12 +649,28 @@ function draw(){
   }
 }
 
-// tooltip + pointer
+// tooltip + pointer: press-drag pans the view, hover/tap shows the crosshair
 const tt = document.getElementById("tooltip");
+let dragX = null, dragOff0 = 0, dragging = false;
+cv.addEventListener("pointerdown", ev => {
+  dragX = ev.clientX; dragOff0 = viewOff; dragging = false;
+  try{ cv.setPointerCapture(ev.pointerId); }catch(e){}
+});
 cv.addEventListener("pointermove", ev => {
   const r = cv.getBoundingClientRect();
   const wcss = r.width, ML = 6, MR = 50;
-  const i0 = cur.i, a = i0-W+1, b = cur.end;
+  if (dragX != null){
+    const dx = ev.clientX - dragX;
+    if (Math.abs(dx) > 8) dragging = true;
+    if (dragging){
+      const barw = (wcss-ML-MR)/Math.max(VIEW.b-VIEW.a, 1);
+      viewOff = dragOff0 - Math.round(dx/barw);
+      tt.style.display = "none"; hoverIdx = null;
+      draw();
+      return;
+    }
+  }
+  const a = VIEW.a, b = VIEW.b, i0 = cur.i;
   let idx = Math.round(a + (ev.clientX-r.left-ML)/(wcss-ML-MR)*(b-a));
   idx = Math.max(a, Math.min(b, idx));
   hoverIdx = idx;
@@ -649,7 +682,10 @@ cv.addEventListener("pointermove", ev => {
   tt.style.left = px+"px"; tt.style.top = (ev.clientY-r.top+14)+"px";
   draw();
 });
-cv.addEventListener("pointerleave", () => { tt.style.display="none"; hoverIdx = null; draw(); });
+const endDrag = () => { dragX = null; dragging = false; };
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", endDrag);
+cv.addEventListener("pointerleave", () => { endDrag(); tt.style.display="none"; hoverIdx = null; draw(); });
 
 document.getElementById("btnLong").addEventListener("click", ()=>enter("L"));
 document.getElementById("btnShort").addEventListener("click", ()=>enter("S"));
