@@ -34,11 +34,9 @@ body{background:var(--bg);color:var(--ink);
 .wrap{max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 .disp{font-family:"Avenir Next Condensed","Helvetica Neue",("Arial Narrow"),"Arial Narrow",system-ui,sans-serif;
   text-transform:uppercase;letter-spacing:.14em}
-header{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:2px 2px 0}
-.brand .eyebrow{font-size:10px;letter-spacing:.22em;color:var(--accent);font-weight:600}
-.brand h1{font-size:26px;line-height:1.05;font-weight:700;letter-spacing:.10em}
-.brand .sub{font-size:12px;color:var(--ink2);margin-top:3px}
-.scorechips{display:flex;gap:6px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:0 2px}
+header h1{font-size:15px;font-weight:700;letter-spacing:.14em;color:var(--accent)}
+header .hint{font-size:10px;color:var(--muted);letter-spacing:.08em}
 .chip{background:var(--card);border:1px solid var(--border);border-radius:6px;
   padding:5px 9px;text-align:center;min-width:52px}
 .chip .k{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
@@ -53,21 +51,21 @@ canvas{display:block;width:100%;touch-action:pan-y}
 #tooltip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--border);
   border-radius:6px;padding:6px 8px;font-size:11px;color:var(--ink);display:none;z-index:5;
   box-shadow:0 3px 12px rgba(0,0,0,.18);white-space:nowrap}
-.calls{display:flex;gap:8px}
-#posBtns{display:none;gap:8px;margin-top:12px}
-#posBtns.show{display:flex}
-#posBtns button{flex:1;border-radius:10px;padding:12px;font-size:14px;font-weight:700;
-  letter-spacing:.10em;cursor:pointer;text-transform:uppercase;font-family:inherit}
-#btnStep{border:1px solid var(--border);background:var(--bg);color:var(--ink)}
-#btnExit{border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent)}
-#posBtns button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-.calls button{flex:1;border:none;border-radius:10px;padding:16px 4px 13px;cursor:pointer;
-  font-size:16px;font-weight:700;letter-spacing:.12em;color:#fff;
+#bar{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--card);
+  border-top:1px solid var(--border);padding:7px 12px calc(9px + env(safe-area-inset-bottom))}
+.barin{max-width:680px;margin:0 auto}
+#barStatus{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  font-size:12px;color:var(--ink2);padding:0 2px 7px;min-height:18px}
+.bargroup{display:flex;gap:8px}
+.bargroup button{flex:1;border:none;border-radius:10px;padding:13px 4px;cursor:pointer;
+  font-size:15px;font-weight:700;letter-spacing:.10em;color:#fff;
   font-family:inherit;text-transform:uppercase}
-.calls button .h{display:block;font-size:9px;font-weight:600;letter-spacing:.16em;opacity:.85;margin-top:3px}
 #btnShort{background:var(--down)} #btnHold{background:var(--hold)} #btnLong{background:var(--up)}
-.calls button:disabled{opacity:.35;cursor:default}
-.calls button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#btnStep{background:var(--bg);color:var(--ink);border:1px solid var(--border)}
+#btnExit{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent)}
+#btnNext{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent)}
+.bargroup button:disabled{opacity:.35;cursor:default}
+.bargroup button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 #reveal{display:none}
 #reveal.show{display:block}
 .verdict{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -77,10 +75,7 @@ canvas{display:block;width:100%;touch-action:pan-y}
 .pill.hold{background:var(--hold-soft);color:var(--ink2)}
 #rvText{font-size:14px;line-height:1.5;margin-top:8px}
 #rvWhen{font-size:12px;color:var(--ink2);margin-top:4px}
-#btnNext{margin-top:12px;width:100%;border:1px solid var(--accent);background:var(--accent-soft);
-  color:var(--accent);border-radius:10px;padding:12px;font-size:14px;font-weight:700;
-  letter-spacing:.14em;cursor:pointer;text-transform:uppercase;font-family:inherit}
-#btnNext:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+body{padding-bottom:130px}
 .board h2{font-size:11px;letter-spacing:.18em;color:var(--muted);font-weight:600;
   text-transform:uppercase;margin-bottom:10px}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
@@ -113,11 +108,8 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 
 <div class="wrap">
   <header>
-    <div class="brand">
-      <div class="eyebrow disp">Blind drill &middot; EUR/USD daily</div>
-      <h1 class="disp">The Tape Room</h1>
-      <div class="sub">Wait, enter, ride, exit &mdash; then see when you were.</div>
-    </div>
+    <h1 class="disp">The Tape Room</h1>
+    <span class="hint">EUR/USD &middot; date hidden</span>
   </header>
 
   <div class="card">
@@ -126,21 +118,20 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
       <div id="tooltip" class="mono"></div>
     </div>
     <div class="legend">
-      <span><span class="sw" style="background:var(--price)"></span>EUR/USD</span>
-      <span><span class="sw" style="background:var(--s20)"></span>SMA 20</span>
-      <span><span class="sw" style="background:var(--s100)"></span>SMA 100</span>
-      <span><span class="sw" style="background:var(--mir)"></span>dollar mirror (UUP inverted)</span>
+      <span><span class="sw" style="background:var(--price)"></span>the price</span>
+      <span><span class="sw" style="background:var(--s20)"></span>20-day avg</span>
+      <span><span class="sw" style="background:var(--s100)"></span>100-day avg</span>
+      <span><span class="sw" style="background:var(--mir)"></span>US dollar, flipped</span>
     </div>
     <details>
       <summary>what am I looking at?</summary>
       <div class="guide">
-        <p><b>EUR/USD</b> &mdash; euros priced in dollars. 1.1000 &rarr; 1.1050 is +50 pips.</p>
-        <p><b>SMA 20 / 100</b> &mdash; the average close of the last 20 / 100 sessions. Price above a rising average = uptrend; price crossing an average = momentum changing.</p>
-        <p><b>Dollar mirror</b> &mdash; the US dollar index fund (UUP) flipped upside-down. When it moves with the price line, the dollar side is driving EUR/USD. When they split, something euro-side is happening.</p>
-        <p><b>5d / 20d move</b> &mdash; net pips over the last 5 / 20 sessions. Recent momentum, short and medium.</p>
-        <p><b>vol 20d</b> &mdash; how violently it's been moving lately (annualized). High vol = bigger swings both ways, wilder rides.</p>
-        <p><b>corr vs USD&#8595; 60d</b> &mdash; how tightly the last 60 sessions tracked the inverted dollar. 1.00 = lockstep with the dollar, near 0 = something else is in charge.</p>
-        <p><b>US 10Y &Delta;20d</b> &mdash; the change in the US 10-year yield over 20 sessions. Rising US yields tend to pull money into dollars (EUR/USD down); falling, the reverse.</p>
+        <p><b>The price</b> &mdash; EUR/USD: euros priced in dollars. 1.1000 &rarr; 1.1050 is +50 pips. Long = you win when it rises; short = you win when it falls.</p>
+        <p><b>20 / 100-day avg</b> &mdash; the average price of the last 20 / 100 sessions. Price above a rising average = uptrend. Price crossing an average is momentum changing.</p>
+        <p><b>US dollar, flipped</b> &mdash; the dollar index, drawn upside-down so it normally moves in the same direction as the price line (a stronger dollar pushes EUR/USD down). When the two lines split apart, something euro-side is driving instead.</p>
+        <p><b>last 5 / 20 days</b> &mdash; net pips over the last 5 / 20 sessions: recent momentum, short and medium.</p>
+        <p><b>how wild</b> &mdash; how violently it's been moving lately. Wild = bigger swings both ways.</p>
+        <p>The CSV export also logs two numbers not shown here: the 60-day correlation with the flipped dollar, and the 20-session change in the US 10-year yield.</p>
       </div>
     </details>
     <details>
@@ -150,19 +141,10 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
   </div>
 
   <div class="ctx mono">
-    <div class="chip"><div class="k">5d move</div><div class="v" id="x5"></div></div>
-    <div class="chip"><div class="k">20d move</div><div class="v" id="x20"></div></div>
-    <div class="chip"><div class="k">vol 20d</div><div class="v" id="xVol"></div></div>
-    <div class="chip"><div class="k">corr vs USD&#8595; 60d</div><div class="v" id="xCorr"></div></div>
-    <div class="chip"><div class="k">US 10Y &Delta;20d</div><div class="v" id="xY"></div></div>
+    <div class="chip"><div class="k">last 5 days</div><div class="v" id="x5"></div></div>
+    <div class="chip"><div class="k">last 20 days</div><div class="v" id="x20"></div></div>
+    <div class="chip"><div class="k">how wild</div><div class="v" id="xVol"></div></div>
   </div>
-
-  <div class="calls">
-    <button id="btnShort">Short<span class="h">EUR falls</span></button>
-    <button id="btnHold">Wait<span class="h" id="holdSub">watch 1 session</span></button>
-    <button id="btnLong">Long<span class="h">EUR rises</span></button>
-  </div>
-  <div style="text-align:center"><button id="btnPass" class="passlink">pass this round &mdash; show me when it was</button></div>
 
   <div class="card" id="reveal">
     <div class="verdict">
@@ -171,11 +153,6 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
     </div>
     <div id="rvText"></div>
     <div id="rvWhen" class="mono"></div>
-    <div id="posBtns">
-      <button id="btnStep">Next session</button>
-      <button id="btnExit">Exit &amp; book</button>
-    </div>
-    <button id="btnNext">Next round</button>
   </div>
 
   <div class="card board">
@@ -207,7 +184,7 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 
   <footer>
     <details>
-      <summary>house rules &amp; data sources</summary>
+      <summary>how to play &amp; data sources</summary>
       <div class="guide">
         <p>Each round drops you at a hidden date between Feb 2007 and Aug 2026. <b>WAIT</b> walks the tape one session while you stay flat &mdash; wait as long as you like. <b>LONG / SHORT</b> enters at the current session; ride with NEXT SESSION and book with EXIT whenever you choose (a round caps at 120 sessions and auto-books). <b>Pass</b> ends the round without a trade. Dates unseal only when the round ends.</p>
         <p>The <b>coin-flip zone</b> is the 95% range a pure guesser's hit rate lands in after the same number of trades. Every round logs its date, your action, sessions waited and held, the result in pips, and the context you saw &mdash; export the CSV and study your own tape.</p>
@@ -215,6 +192,24 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
       </div>
     </details>
   </footer>
+</div>
+
+<div id="bar">
+  <div class="barin">
+    <div id="barStatus"><span id="barStatusTxt" class="mono"></span><button id="btnPass" class="passlink">pass round</button></div>
+    <div class="bargroup" id="barLive">
+      <button id="btnShort">Short</button>
+      <button id="btnHold">Wait</button>
+      <button id="btnLong">Long</button>
+    </div>
+    <div class="bargroup" id="barOpen" style="display:none">
+      <button id="btnStep">Next session</button>
+      <button id="btnExit">Exit &amp; book</button>
+    </div>
+    <div class="bargroup" id="barDone" style="display:none">
+      <button id="btnNext">Next round</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -268,15 +263,23 @@ let cur = { i: 0, end: 0, entry: null, dir: null, mode: "live", revealed: false,
 let hoverIdx = null;
 const el = id => document.getElementById(id);
 
+function setBar(mode){
+  el("barLive").style.display = mode === "live" ? "flex" : "none";
+  el("barOpen").style.display = mode === "open" ? "flex" : "none";
+  el("barDone").style.display = mode === "done" ? "flex" : "none";
+  el("btnPass").style.display = mode === "live" ? "" : "none";
+}
+function status(html){ el("barStatusTxt").innerHTML = html; }
+const pnlSpan = p => `<span style="color:${p>0?"var(--up)":p<0?"var(--down)":"var(--ink2)"}">${pip(p)}p</span>`;
+
 function newRound(){
   let i, tries = 0;
   do { i = LO + Math.floor(Math.random()*(HI-LO)); tries++; } while (used.has(i) && tries < 60);
   cur = { i, end: i, entry: null, dir: null, mode: "live", revealed: false, ctx: {} };
   hoverIdx = null;
   el("reveal").classList.remove("show");
-  el("posBtns").classList.remove("show");
-  el("btnNext").style.display = "";
-  el("btnPass").style.display = "";
+  setBar("live");
+  status("somewhere in 19 years of history — your move");
   setButtons(true);
   fillContext(); fillTape(); draw();
 }
@@ -293,9 +296,8 @@ function fillContext(){
   cur.ctx = { d5: Math.round(d5), d20: Math.round(d20), vol: +v.toFixed(1),
               corr: c==null ? "" : +c.toFixed(2), dy20: y==null ? "" : +y.toFixed(2) };
   set("x5", pip(d5)+"p", d5); set("x20", pip(d20)+"p", d20);
-  document.getElementById("xVol").textContent = v.toFixed(1)+"%";
-  document.getElementById("xCorr").textContent = c==null ? "–" : c.toFixed(2);
-  set("xY", y==null ? "–" : (y>=0?"+":"")+y.toFixed(2), y||0);
+  const mood = v < 7 ? "calm" : v < 12 ? "normal" : "wild";
+  document.getElementById("xVol").textContent = v.toFixed(1)+"% · "+mood;
 }
 function set(id, txt, sign){
   const el = document.getElementById(id); el.textContent = txt;
@@ -325,14 +327,7 @@ function wait(){
   if (cur.end >= maxEnd()){ pass(true); return; }
   cur.end++; cur.revealed = true;
   const w = cur.end - cur.i, drift = (E[cur.end]-E[cur.i])*1e4;
-  el("rvPill").textContent = "FLAT · day "+w;
-  el("rvPill").className = "pill mono hold";
-  el("rvMove").textContent = pip(drift)+"p drift";
-  el("rvMove").className = "pill mono hold";
-  el("rvText").textContent = "Watching from the sidelines. Enter when you see it, or pass.";
-  el("rvWhen").textContent = "";
-  el("btnNext").style.display = "none";
-  el("reveal").classList.add("show");
+  status(`flat · watched ${w}d · it drifted ${pnlSpan(drift)}`);
   fillContext(); fillTape(); draw();
 }
 
@@ -340,12 +335,8 @@ function enter(dir){
   if (cur.mode !== "live") return;
   fillContext();                             // snapshot decision context at entry
   cur.mode = "open"; cur.dir = dir; cur.entry = cur.end; cur.revealed = true;
-  el("btnNext").style.display = "none";
-  el("btnPass").style.display = "none";
-  el("posBtns").classList.add("show");
-  el("rvWhen").textContent = "";
+  setBar("open");
   setButtons(false);
-  el("reveal").classList.add("show");
   step();                                    // first tap of the tape
 }
 
@@ -358,12 +349,7 @@ function step(){
   if (cur.end >= maxEnd()){ exitPos(true); return; }
   cur.end++;
   const pnl = posPnl(), day = cur.end - cur.entry;
-  el("rvPill").textContent = (cur.dir==="L"?"LONG":"SHORT")+" · OPEN";
-  el("rvPill").className = "pill mono hold";
-  el("rvMove").textContent = pip(pnl)+"p · day "+day;
-  el("rvMove").className = "pill mono " + (pnl > 0 ? "up" : pnl < 0 ? "down" : "hold");
-  el("rvText").textContent =
-    `In at ${E[cur.entry].toFixed(4)}, tape now ${E[cur.end].toFixed(4)}. Ride it or book it.`;
+  status(`${cur.dir==="L"?"LONG":"SHORT"} open · day ${day} · you're ${pnlSpan(pnl)}`);
   fillContext(); fillTape(); draw();
   if (cur.end >= maxEnd()) exitPos(true);
 }
@@ -404,12 +390,12 @@ function pass(auto){
   finishRound();
 }
 function finishRound(){
-  el("posBtns").classList.remove("show");
-  el("btnPass").style.display = "none";
-  el("btnNext").style.display = "";
+  setBar("done");
+  status("round over — tape unsealed below");
   el("reveal").classList.add("show");
   setButtons(false);
   updateBoard(); draw();
+  el("reveal").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 // ---------- scoreboard ----------
@@ -474,7 +460,7 @@ const cv = document.getElementById("cv");
 function draw(){
   const dpr = window.devicePixelRatio||1;
   const wcss = cv.clientWidth || 640;
-  const P1H = 280, GAP = 26, P2H = 96, hcss = P1H+GAP+P2H+8;
+  const P1H = 200, GAP = 22, P2H = 60, hcss = P1H+GAP+P2H+8;
   cv.style.height = hcss+"px";
   cv.width = wcss*dpr; cv.height = hcss*dpr;
   const g = cv.getContext("2d"); g.scale(dpr,dpr);
@@ -567,7 +553,7 @@ function draw(){
   // pane 2: dollar mirror
   const top2 = P1H+GAP;
   g.fillStyle = C("--muted"); g.font = "9px "+MONO.slice(5); g.textAlign="left";
-  g.fillText("DOLLAR MIRROR — UUP inverted, window start = 100", ML, top2-8);
+  g.fillText("US DOLLAR, FLIPPED — it usually follows the price line", ML, top2-8);
   g.font = MONO;
   const base = PACK.u[a] != null ? PACK.u[a] : null;
   if (base){
