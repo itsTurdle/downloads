@@ -1,0 +1,15 @@
+bars: 93162  2010-11-14 -> 2026-08-14  bars/day~23  1y~5796
+labels: clean-up 51319  clean-down 35892  messy/other 5951
+AUC 1h read (clean labels, all OOS): 0.916   AUC 4h read (clean labels, all OOS): 0.813   
+
+TUNE on VAL:
+  picked d_ent=0.1 d_exf=0.3 m=2.0 -> VAL n=2336 WR=33.6% shape=1.81:1 exp=-0.019%
+
+=== TEST 2020+ (untouched) ===
+  replica (cascade)          n=2446  WR=36.3%  shape=1.67:1  avg win +0.83% avg loss -0.50%  exp -0.017%  tot -39.1%
+  no escalation              n=2374  WR=35.3%  shape=1.77:1  avg win +0.87% avg loss -0.49%  exp -0.013%  tot -33.5%
+  always-long, same exits    n=1640  WR=53.3%  shape=0.96:1  avg win +0.86% avg loss -0.89%  exp +0.042%  tot +75.6%
+  shuffled-p (dead eyes)     n=12039  WR=45.4%  shape=0.99:1  avg win +0.21% avg loss -0.21%  exp -0.014%  tot -83.4%
+  ORACLE (sees the true label) n=1850  WR=70.5%  shape=1.95:1  avg win +0.92% avg loss -0.47%  exp +0.505%  tot +1003074.7%
+
+leak test (final-year holdout): normal AUC 0.926 vs +1-bar-lag AUC 0.917 (mild drop = clean; collapse = leak)
