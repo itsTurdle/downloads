@@ -114,9 +114,10 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 <div class="wrap">
   <header>
     <h1 class="disp">The Tape Room</h1>
-    <div class="tfrow" role="radiogroup" aria-label="Bar timeframe">
-      <button class="tfbtn" data-tf="1d">1D</button>
-      <button class="tfbtn" data-tf="1h">1H</button>
+    <div class="tfrow" role="radiogroup" aria-label="Instrument and bar timeframe">
+      <button class="tfbtn" data-tf="1d">&euro; 1D</button>
+      <button class="tfbtn" data-tf="1h">&euro; 1H</button>
+      <button class="tfbtn" data-tf="dow">DOW</button>
     </div>
   </header>
 
@@ -194,7 +195,7 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
     <details>
       <summary>how to play &amp; data sources</summary>
       <div class="guide">
-        <p>Each round drops you at a hidden date in the past. <b>1D</b> plays daily bars (2007&ndash;2026, with the dollar-mirror pane); <b>1H</b> plays hourly bars. <b>WAIT</b> walks the tape one bar while you stay flat &mdash; wait as long as you like. <b>LONG / SHORT</b> enters at the current bar; ride with NEXT SESSION and book with EXIT whenever you choose &mdash; there is no time limit, a position only auto-books if the data itself ends. <b>Pass</b> ends the round without a trade. Dates unseal only when the round ends.</p>
+        <p>Each round drops you at a hidden date in the past. <b>&euro; 1D</b> plays EUR/USD daily bars (2007&ndash;2026, with the dollar-mirror pane); <b>&euro; 1H</b> plays EUR/USD hourly; <b>DOW</b> plays the Dow Jones (via the DIA fund, 1998&ndash;2026), scored in basis points instead of pips. <b>WAIT</b> walks the tape one bar while you stay flat &mdash; wait as long as you like. <b>LONG / SHORT</b> enters at the current bar; ride with NEXT SESSION and book with EXIT whenever you choose &mdash; there is no time limit, a position only auto-books if the data itself ends. <b>Pass</b> ends the round without a trade. Dates unseal only when the round ends.</p>
         <p><b>Drag the chart</b> sideways to look further back in history; after a round ends, drag right to watch what happened after you left. Any button snaps the view back to now.</p>
         <p>The <b>coin-flip zone</b> is the 95% range a pure guesser's hit rate lands in after the same number of trades. Every round logs its date, your action, sessions waited and held, the result in pips, and the context you saw &mdash; export the CSV and study your own tape.</p>
         <p>Prices: ECB daily EUR/USD fixes (1D); HistData.com minute data resampled to hourly (1H). Dollar mirror: UUP. Yields: US 10-year constant maturity.</p>
@@ -226,6 +227,9 @@ footer{font-size:10.5px;color:var(--muted);line-height:1.6;padding:0 2px}
 const PACK = __PACK__;
 const W = 120;
 let TF = "1d", E, N, S20, S100, RET, URET, MIR, ANN, LO, HI, UNIT = "d";
+let DATES = null, PDEC = 4, SUF = "p", NAME = "EUR/USD";
+// pips(i,j): EUR = absolute pips; DOW = basis points (0.01%) so the number scales the same
+function pips(i, j){ return TF === "dow" ? (E[j]/E[i]-1)*1e4 : (E[j]-E[i])*1e4; }
 
 function smaArr(a, n){
   const out = new Array(a.length).fill(null); let s = 0;
@@ -239,8 +243,9 @@ function smaArr(a, n){
 function setTF(tf){
   TF = tf; UNIT = tf === "1h" ? "h" : "d";
   try{ localStorage.setItem("taperoom_tf", tf); }catch(e){}
-  if (tf === "1h"){ E = PACK.hr.e; MIR = null; ANN = Math.sqrt(6240); }
-  else { E = PACK.e; MIR = PACK.u; ANN = Math.sqrt(252); }
+  if (tf === "1h"){ E = PACK.hr.e; MIR = null; ANN = Math.sqrt(6240); DATES = null; PDEC = 4; SUF = "p"; NAME = "EUR/USD"; }
+  else if (tf === "dow"){ E = PACK.dj.e; MIR = null; ANN = Math.sqrt(252); DATES = PACK.dj.d; PDEC = 2; SUF = "bp"; NAME = "DOW (DIA)"; }
+  else { E = PACK.e; MIR = PACK.u; ANN = Math.sqrt(252); DATES = PACK.d; PDEC = 4; SUF = "p"; NAME = "EUR/USD"; }
   N = E.length;
   S20 = smaArr(E, 20); S100 = smaArr(E, 100);
   RET = new Array(N).fill(null);
@@ -280,15 +285,15 @@ function dLong(i){
   if (TF === "1h"){ const t = hrDate(i);
     return MN[t.getUTCMonth()]+" "+t.getUTCDate()+", "+t.getUTCFullYear()+", "
       +String(t.getUTCHours()).padStart(2,"0")+":00 UTC"; }
-  const s = String(PACK.d[i]); return MN[+s.slice(4,6)-1]+" "+(+s.slice(6,8))+", "+s.slice(0,4);
+  const s = String(DATES[i]); return MN[+s.slice(4,6)-1]+" "+(+s.slice(6,8))+", "+s.slice(0,4);
 }
 function dMY(i){
   if (TF === "1h"){ const t = hrDate(i); return MN[t.getUTCMonth()]+" "+t.getUTCFullYear(); }
-  const s = String(PACK.d[i]); return MN[+s.slice(4,6)-1]+" "+s.slice(0,4);
+  const s = String(DATES[i]); return MN[+s.slice(4,6)-1]+" "+s.slice(0,4);
 }
 function dKey(i){
   if (TF === "1h"){ return hrDate(i).toISOString().slice(0,13)+"h"; }
-  return PACK.d[i];
+  return DATES[i];
 }
 
 // ---------- state ----------
@@ -310,7 +315,7 @@ function setBar(mode){
   el("btnPass").style.display = mode === "live" ? "" : "none";
 }
 function status(html){ el("barStatusTxt").innerHTML = html; }
-const pnlSpan = p => `<span style="color:${p>0?"var(--up)":p<0?"var(--down)":"var(--ink2)"}">${pip(p)}p</span>`;
+const pnlSpan = p => `<span style="color:${p>0?"var(--up)":p<0?"var(--down)":"var(--ink2)"}">${pip(p)}${SUF}</span>`;
 
 function newRound(){
   let i, tries = 0;
@@ -330,12 +335,12 @@ function setButtons(on){
 function pip(x){ return (x>=0?"+":"")+x.toFixed(0); }
 function fillContext(){
   const i = cur.end;
-  const d5 = (E[i]-E[i-5])*1e4, d20 = (E[i]-E[i-20])*1e4;
+  const d5 = pips(i-5, i), d20 = pips(i-20, i);
   const v = vol20(i), c = corr60(i);
   const y = (TF === "1d" && PACK.y[i]!=null && PACK.y[i-20]!=null) ? PACK.y[i]-PACK.y[i-20] : null;
   cur.ctx = { d5: Math.round(d5), d20: Math.round(d20), vol: +v.toFixed(1),
               corr: c==null ? "" : +c.toFixed(2), dy20: y==null ? "" : +y.toFixed(2) };
-  set("x5", pip(d5)+"p", d5); set("x20", pip(d20)+"p", d20);
+  set("x5", pip(d5)+SUF, d5); set("x20", pip(d20)+SUF, d20);
   const mood = v < 7 ? "calm" : v < 12 ? "normal" : "wild";
   document.getElementById("xVol").textContent = v.toFixed(1)+"% · "+mood;
 }
@@ -344,12 +349,12 @@ function set(id, txt, sign){
   el.style.color = sign > 0 ? "var(--up)" : sign < 0 ? "var(--down)" : "var(--ink)";
 }
 function fillTape(){
-  const i = cur.end; let rows = "<tr><th>day</th><th>close</th><th>Δ pips</th><th>SMA20</th></tr>";
+  const i = cur.end; let rows = `<tr><th>day</th><th>close</th><th>Δ ${SUF}</th><th>SMA20</th></tr>`;
   for (let k = i-14; k <= i; k++){
-    const d = (E[k]-E[k-1])*1e4;
-    rows += `<tr><td>d${k-i===0?"0":k-i}</td><td>${E[k].toFixed(4)}</td>`+
+    const d = pips(k-1, k);
+    rows += `<tr><td>d${k-i===0?"0":k-i}</td><td>${E[k].toFixed(PDEC)}</td>`+
       `<td style="color:${d>=0?"var(--up)":"var(--down)"}">${pip(d)}</td>`+
-      `<td>${S20[k]?S20[k].toFixed(4):"–"}</td></tr>`;
+      `<td>${S20[k]?S20[k].toFixed(PDEC):"–"}</td></tr>`;
   }
   document.getElementById("tapeTable").innerHTML = rows;
 }
@@ -366,7 +371,7 @@ function wait(){
   if (cur.mode !== "live") return;
   if (cur.end >= maxEnd()){ pass(true); return; }
   cur.end++; cur.revealed = true; viewOff = 0;
-  const w = cur.end - cur.i, drift = (E[cur.end]-E[cur.i])*1e4;
+  const w = cur.end - cur.i, drift = pips(cur.i, cur.end);
   status(`flat · watched ${w}${UNIT} · it drifted ${pnlSpan(drift)}`);
   fillContext(); fillTape(); draw();
 }
@@ -381,7 +386,7 @@ function enter(dir){
 }
 
 function posPnl(){
-  const move = (E[cur.end]-E[cur.entry])*1e4;
+  const move = pips(cur.entry, cur.end);
   return cur.dir === "L" ? move : -move;
 }
 function step(){
@@ -397,15 +402,15 @@ function exitPos(auto){
   if (cur.mode !== "open") return;
   cur.mode = "done";
   const held = cur.end - cur.entry, waited = cur.entry - cur.i;
-  const move = (E[cur.end]-E[cur.entry])*1e4, pnl = posPnl();
+  const move = pips(cur.entry, cur.end), pnl = posPnl();
   record(cur.entry, cur.dir, waited, held, move, pnl);
   const won = pnl > 0;
-  el("rvPill").textContent = "BOOKED "+(won?"+":"")+pnl.toFixed(0)+"p";
+  el("rvPill").textContent = "BOOKED "+(won?"+":"")+pnl.toFixed(0)+SUF;
   el("rvPill").className = "pill mono " + (won ? "up" : "down");
   el("rvMove").textContent = (waited?("waited "+waited+UNIT+" · "):"")+"held "+held+UNIT;
   el("rvMove").className = "pill mono hold";
   el("rvText").textContent =
-    `${cur.dir==="L"?"LONG":"SHORT"} ${E[cur.entry].toFixed(4)} → ${E[cur.end].toFixed(4)}`
+    `${cur.dir==="L"?"LONG":"SHORT"} ${E[cur.entry].toFixed(PDEC)} → ${E[cur.end].toFixed(PDEC)}`
     + (auto ? " — the tape ran out of history, position auto-booked." : ".");
   el("rvWhen").textContent =
     "You were trading "+dMY(cur.i-W+1)+" – "+dLong(cur.end)+".";
@@ -415,7 +420,7 @@ function pass(auto){
   if (cur.mode !== "live") return;
   fillContext();
   cur.mode = "done";
-  const w = cur.end - cur.i, move = w ? (E[cur.end]-E[cur.i])*1e4 : 0;
+  const w = cur.end - cur.i, move = w ? pips(cur.i, cur.end) : 0;
   record(cur.end, "P", w, 0, move, 0);
   el("rvPill").textContent = "PASSED";
   el("rvPill").className = "pill mono hold";
@@ -423,7 +428,7 @@ function pass(auto){
   el("rvMove").className = "pill mono hold";
   el("rvText").textContent = auto
     ? "The tape ran out of history while you watched. Passed."
-    : w ? `You watched ${w} bar${w===1?"":"s"} and walked. It had moved ${pip(move)} pips.`
+    : w ? `You watched ${w} bar${w===1?"":"s"} and walked. It had moved ${pip(move)}${SUF}.`
         : "Walked without waiting. Sometimes that's the read.";
   el("rvWhen").textContent =
     "This was "+dMY(cur.i-W+1)+" – "+dLong(cur.end)+".";
@@ -538,7 +543,7 @@ function draw(){
     const v = lo + (hi-lo)*(t+0.5)/4, yy = y1(v);
     g.strokeStyle = C("--grid"); g.lineWidth = 1;
     g.beginPath(); g.moveTo(ML,yy); g.lineTo(wcss-MR,yy); g.stroke();
-    g.fillStyle = C("--muted"); g.fillText(v.toFixed(3), wcss-MR+6, yy);
+    g.fillStyle = C("--muted"); g.fillText(v.toFixed(PDEC === 2 ? 1 : 3), wcss-MR+6, yy);
   }
   // day-0 marker
   if (i0 >= a && i0 <= b){
@@ -564,12 +569,12 @@ function draw(){
   line(E,    C("--price"), a, b);
   if (cur.revealed && cur.end > i0 && cur.end >= a && cur.end <= b){
     const anchor = cur.entry != null ? cur.entry : i0;
-    const mv = E[cur.end]-E[anchor];
+    const mv = pips(anchor, cur.end);
     const good = cur.dir === "S" ? -mv : mv;           // your P&L sign, not the tape's
     g.fillStyle = C(good >= 0 ? "--up" : "--down");
     g.beginPath(); g.arc(x(cur.end), y1(E[cur.end]), 4, 0, 7); g.fill();
     g.textAlign = "right"; g.fillStyle = C("--ink");
-    g.fillText(pip((cur.dir==="S"?-mv:mv)*1e4)+"p", x(cur.end)-8, y1(E[cur.end])-10);
+    g.fillText(pip(cur.dir==="S"?-mv:mv)+SUF, x(cur.end)-8, y1(E[cur.end])-10);
   }
   if (b > cur.end && cur.end >= a && cur.end <= b){   // aftermath: mark where you left
     g.setLineDash([2,3]); g.strokeStyle = C("--muted"); g.lineWidth = 1;
@@ -590,7 +595,7 @@ function draw(){
   // right-aligned so they never collide with the axis number column
   g.textAlign = "right";
   const ends = (cur.revealed || viewOff !== 0) ? [] :
-    [["EUR/USD", E[i0], C("--price")], ["s20", S20[i0], C("--s20")], ["s100", S100[i0], C("--s100")]]
+    [[NAME, E[i0], C("--price")], ["s20", S20[i0], C("--s20")], ["s100", S100[i0], C("--s100")]]
     .filter(e => e[1] != null).sort((p,q)=>y1(p[1])-y1(q[1]));
   let lastY = -20;
   for (const [nm,v,col] of ends){
@@ -675,8 +680,8 @@ cv.addEventListener("pointermove", ev => {
   idx = Math.max(a, Math.min(b, idx));
   hoverIdx = idx;
   const rel = idx-i0;
-  tt.innerHTML = `d${rel>0?"+"+rel:rel} &middot; ${E[idx].toFixed(4)}`
-    + (S20[idx]?`<br>s20 ${S20[idx].toFixed(4)} &middot; s100 ${S100[idx]?S100[idx].toFixed(4):"–"}`:"");
+  tt.innerHTML = `d${rel>0?"+"+rel:rel} &middot; ${E[idx].toFixed(PDEC)}`
+    + (S20[idx]?`<br>s20 ${S20[idx].toFixed(PDEC)} &middot; s100 ${S100[idx]?S100[idx].toFixed(PDEC):"–"}`:"");
   tt.style.display = "block";
   const px = Math.min(Math.max(ev.clientX-r.left+12, 4), wcss-130);
   tt.style.left = px+"px"; tt.style.top = (ev.clientY-r.top+14)+"px";
@@ -725,11 +730,12 @@ if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)")
 document.querySelectorAll(".tfbtn").forEach(b => b.addEventListener("click", ()=>{
   if (cur.mode === "open" || b.dataset.tf === TF) return;
   if (b.dataset.tf === "1h" && !PACK.hr) return;
+  if (b.dataset.tf === "dow" && !PACK.dj) return;
   setTF(b.dataset.tf);
 }));
 let initTF = "1d";
 try{ initTF = localStorage.getItem("taperoom_tf") || "1d"; }catch(e){}
-if (initTF === "1h" && !PACK.hr) initTF = "1d";
+if ((initTF === "1h" && !PACK.hr) || (initTF === "dow" && !PACK.dj)) initTF = "1d";
 setTF(initTF);
 updateBoard();
 </script>
